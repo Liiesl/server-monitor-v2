@@ -55,20 +55,43 @@ jobs:
       run: |
         Write-Host "Checking dist directory structure..."
         if (Test-Path "dist") {
-          Get-ChildItem -Path "dist" -Recurse | Select-Object FullName | ForEach-Object { Write-Host $_.FullName }
+          # List top-level directories
+          Write-Host "`nTop-level directories in dist:"
+          Get-ChildItem -Path "dist" -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
+          
+          # Check main.dist directory specifically
+          if (Test-Path "dist\main.dist") {
+            Write-Host "`nContents of dist\main.dist:"
+            $mainDistFiles = Get-ChildItem -Path "dist\main.dist" -File | Select-Object -First 20
+            if ($mainDistFiles) {
+              $mainDistFiles | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+            } else {
+              Write-Warning "  No files found in main.dist"
+            }
+            
+            # Check for .exe files specifically
+            $exeFiles = Get-ChildItem -Path "dist\main.dist" -Filter "*.exe" -ErrorAction SilentlyContinue
+            if ($exeFiles) {
+              Write-Host "`nFound .exe files in main.dist:"
+              $exeFiles | ForEach-Object { Write-Host "  $($_.FullName)" }
+            } else {
+              Write-Warning "No .exe files found in main.dist"
+            }
+          }
           
           # Check for expected paths
           $expectedPath1 = "dist\main.dist\main.exe"
           $expectedPath2 = "dist\main.exe"
           
           if (Test-Path $expectedPath1) {
-            Write-Host "Found build output at: $expectedPath1"
+            Write-Host "`n✓ Found build output at: $expectedPath1"
           } elseif (Test-Path $expectedPath2) {
-            Write-Host "Found build output at: $expectedPath2"
-            Write-Warning "Build structure differs from expected. Updating installer script..."
+            Write-Host "`n✓ Found build output at: $expectedPath2"
+            Write-Warning "Build structure differs from expected."
           } else {
-            Write-Error "Build output not found at expected locations!"
+            Write-Error "`nBuild output not found at expected locations!"
             Write-Error "Expected: $expectedPath1 or $expectedPath2"
+            Write-Error "Please check the Nuitka build completed successfully."
             exit 1
           }
         } else {

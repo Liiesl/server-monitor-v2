@@ -47,24 +47,24 @@ Section "Application" SecApp
     
     ; Copy the main executable and all dependencies from Nuitka standalone build
     ; Try the expected standalone build path first
-    IfFileExists "dist\main.dist\main.exe" copy_standalone copy_alternative
+    IfFileExists "dist\main.dist\main.exe" 0 copy_alternative
     
-    copy_standalone:
-        ; Copy the main executable from Nuitka standalone build
-        File "dist\main.dist\main.exe"
-        ; Copy all DLLs and dependencies from the dist folder
-        File /r "dist\main.dist\*.*"
-        Goto copy_done
+    ; File exists, copy from main.dist
+    File "dist\main.dist\main.exe"
+    ; Copy all DLLs and dependencies from the dist folder (exclude build artifacts)
+    File /r /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" /x "main.build" "dist\main.dist\*.*"
+    Goto copy_done
     
     copy_alternative:
         ; Alternative: if build structure is different, try direct dist path
         IfFileExists "dist\main.exe" 0 copy_error
         File "dist\main.exe"
-        File /r "dist\*.*"
+        ; Copy dependencies but exclude build directory
+        File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" "dist\*.*"
         Goto copy_done
     
     copy_error:
-        MessageBox MB_OK|MB_ICONSTOP "Error: Build output not found. Expected 'dist\main.dist\main.exe' or 'dist\main.exe'"
+        MessageBox MB_OK|MB_ICONSTOP "Error: Build output not found.$\n$\nExpected 'dist\main.dist\main.exe' or 'dist\main.exe'$\n$\nPlease check the Nuitka build completed successfully."
         Abort
     
     copy_done:
