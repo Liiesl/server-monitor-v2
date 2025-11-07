@@ -50,11 +50,40 @@ jobs:
         enable-plugins: pyside6
         output-dir: dist
     
+    - name: Verify Nuitka build output
+      shell: powershell
+      run: |
+        Write-Host "Checking dist directory structure..."
+        if (Test-Path "dist") {
+          Get-ChildItem -Path "dist" -Recurse | Select-Object FullName | ForEach-Object { Write-Host $_.FullName }
+          
+          # Check for expected paths
+          $expectedPath1 = "dist\main.dist\main.exe"
+          $expectedPath2 = "dist\main.exe"
+          
+          if (Test-Path $expectedPath1) {
+            Write-Host "Found build output at: $expectedPath1"
+          } elseif (Test-Path $expectedPath2) {
+            Write-Host "Found build output at: $expectedPath2"
+            Write-Warning "Build structure differs from expected. Updating installer script..."
+          } else {
+            Write-Error "Build output not found at expected locations!"
+            Write-Error "Expected: $expectedPath1 or $expectedPath2"
+            exit 1
+          }
+        } else {
+          Write-Error "dist directory does not exist!"
+          exit 1
+        }
+    
     - name: Create installer with NSIS
       shell: powershell
+      working-directory: ${{ github.workspace }}
       run: |
         $nsisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
         if (Test-Path $nsisPath) {
+          Write-Host "Current directory: $(Get-Location)"
+          Write-Host "Building installer from: .github\script\installer.nsi"
           & $nsisPath ".github\script\installer.nsi"
         } else {
           Write-Error "NSIS not found at expected path"

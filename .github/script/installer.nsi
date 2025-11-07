@@ -45,11 +45,29 @@ Section "Application" SecApp
     ; Set output path to the installation directory
     SetOutPath "$INSTDIR"
     
-    ; Copy the main executable from Nuitka standalone build
-    File "dist\main.dist\main.exe"
+    ; Copy the main executable and all dependencies from Nuitka standalone build
+    ; Try the expected standalone build path first
+    IfFileExists "dist\main.dist\main.exe" copy_standalone copy_alternative
     
-    ; Copy all DLLs and dependencies from the dist folder
-    File /r "dist\main.dist\*.*"
+    copy_standalone:
+        ; Copy the main executable from Nuitka standalone build
+        File "dist\main.dist\main.exe"
+        ; Copy all DLLs and dependencies from the dist folder
+        File /r "dist\main.dist\*.*"
+        Goto copy_done
+    
+    copy_alternative:
+        ; Alternative: if build structure is different, try direct dist path
+        IfFileExists "dist\main.exe" 0 copy_error
+        File "dist\main.exe"
+        File /r "dist\*.*"
+        Goto copy_done
+    
+    copy_error:
+        MessageBox MB_OK|MB_ICONSTOP "Error: Build output not found. Expected 'dist\main.dist\main.exe' or 'dist\main.exe'"
+        Abort
+    
+    copy_done:
     
     ; Create directories for logs and metrics
     CreateDirectory "$INSTDIR\logs"
