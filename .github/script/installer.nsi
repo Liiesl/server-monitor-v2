@@ -3,6 +3,9 @@
 
 !include "MUI2.nsh"
 
+; Change to workspace root directory (two levels up from .github\script\)
+!cd "${__FILEDIR__}\..\.."
+
 ; Application Information
 !define APP_NAME "Node.js Server Manager"
 !define APP_VERSION "2.0.0"
@@ -11,13 +14,12 @@
 !define APP_UNINST "Uninstall.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\${APP_NAME}"
 
-; Build paths - use relative to execution directory (workspace root)
-; NSIS is executed from workspace root with: makensis .github\script\installer.nsi
+; Build paths - now relative to workspace root due to !cd directive above
 !define WORKSPACE_ROOT "."
 
 ; Installer Settings
 Name "${APP_NAME}"
-OutFile "dist\NodeJS_Server_Manager_Setup.exe"
+OutFile "${WORKSPACE_ROOT}\dist\NodeJS_Server_Manager_Setup.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKCU "Software\${APP_NAME}" ""
 RequestExecutionLevel user
