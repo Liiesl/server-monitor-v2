@@ -3,9 +3,6 @@
 
 !include "MUI2.nsh"
 
-; Change to workspace root directory (two levels up from .github\script\)
-!cd "${__FILEDIR__}\..\.."
-
 ; Application Information
 !define APP_NAME "Node.js Server Manager"
 !define APP_VERSION "2.0.0"
@@ -14,12 +11,10 @@
 !define APP_UNINST "Uninstall.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\${APP_NAME}"
 
-; Build paths - now relative to workspace root due to !cd directive above
-!define WORKSPACE_ROOT "."
-
 ; Installer Settings
 Name "${APP_NAME}"
-OutFile "${WORKSPACE_ROOT}\dist\NodeJS_Server_Manager_Setup.exe"
+; Output file path relative to installer location (.github\script\)
+OutFile "..\..\dist\NodeJS_Server_Manager_Setup.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKCU "Software\${APP_NAME}" ""
 RequestExecutionLevel user
@@ -52,22 +47,22 @@ Section "Application" SecApp
     SetOutPath "$INSTDIR"
     
     ; Copy the main executable and all dependencies from Nuitka standalone build
-    ; Use workspace root path constructed from script location
+    ; All paths are relative to installer location at .github\script\
     ; Try the expected standalone build path first
-    IfFileExists "${WORKSPACE_ROOT}\dist\main.dist\main.exe" 0 copy_alternative
+    IfFileExists "..\..\dist\main.dist\main.exe" 0 copy_alternative
     
     ; File exists, copy from main.dist
-    File "${WORKSPACE_ROOT}\dist\main.dist\main.exe"
+    File "..\..\dist\main.dist\main.exe"
     ; Copy all DLLs and dependencies from the dist folder (exclude build artifacts)
-    File /r /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" /x "main.build" "${WORKSPACE_ROOT}\dist\main.dist\*.*"
+    File /r /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" /x "main.build" "..\..\dist\main.dist\*.*"
     Goto copy_done
     
     copy_alternative:
         ; Alternative: if build structure is different, try direct dist path
-        IfFileExists "${WORKSPACE_ROOT}\dist\main.exe" 0 copy_error
-        File "${WORKSPACE_ROOT}\dist\main.exe"
+        IfFileExists "..\..\dist\main.exe" 0 copy_error
+        File "..\..\dist\main.exe"
         ; Copy dependencies but exclude build directory
-        File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" "${WORKSPACE_ROOT}\dist\*.*"
+        File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" "..\..\dist\*.*"
         Goto copy_done
     
     copy_error:
