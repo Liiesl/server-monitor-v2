@@ -84,15 +84,6 @@ class DashboardView(QWidget):
         self.performance_graphs.time_range_changed.connect(self.update_graphs)
         content_layout.addWidget(self.performance_graphs)
         
-        # Add Server button
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        self.add_btn = QPushButton("+ Add Server")
-        self.add_btn.setStyleSheet(get_success_button_style())
-        self.add_btn.clicked.connect(self.add_server)
-        button_layout.addWidget(self.add_btn)
-        content_layout.addLayout(button_layout)
         
         # Add stretch to push content to top
         content_layout.addStretch()

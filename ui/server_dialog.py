@@ -2,10 +2,12 @@
 Dialog for adding/editing server configurations
 """
 from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox, QComboBox
+    QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox, QComboBox,
+    QHBoxLayout, QPushButton, QFileDialog, QWidget
 )
 from .styles import get_dialog_style
 from .constants import SPACING_NORMAL, SPACING_SMALL
+import os
 
 
 class ServerDialog(QDialog):
@@ -39,8 +41,18 @@ class ServerDialog(QDialog):
         self.server_type_input.currentTextChanged.connect(self.on_server_type_changed)
         layout.addRow("Server Type:", self.server_type_input)
         
+        # Server Path with browse button
+        path_widget = QWidget()
+        path_layout = QHBoxLayout()
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.setSpacing(SPACING_SMALL)
         self.path_input = QLineEdit()
-        layout.addRow("Server Path:", self.path_input)
+        path_browse_btn = QPushButton("Browse...")
+        path_browse_btn.clicked.connect(self.browse_server_path)
+        path_layout.addWidget(self.path_input)
+        path_layout.addWidget(path_browse_btn)
+        path_widget.setLayout(path_layout)
+        layout.addRow("Server Path:", path_widget)
         
         # Command input (unified - changes based on server type)
         from PySide6.QtWidgets import QLabel
@@ -50,14 +62,25 @@ class ServerDialog(QDialog):
         self.command_input.setPlaceholderText("node, npm, yarn, etc.")
         layout.addRow(self.command_label, self.command_input)
         
-        # Virtual environment path (for Flask only)
+        # Virtual environment path (for Flask only) with browse button
         from PySide6.QtWidgets import QLabel
         self.venv_label = QLabel("Virtual Environment (optional):")
+        venv_widget = QWidget()
+        venv_layout = QHBoxLayout()
+        venv_layout.setContentsMargins(0, 0, 0, 0)
+        venv_layout.setSpacing(SPACING_SMALL)
         self.venv_input = QLineEdit()
         self.venv_input.setPlaceholderText("e.g., venv, .venv, C:\\projects\\myapp\\venv")
+        venv_browse_btn = QPushButton("Browse...")
+        venv_browse_btn.clicked.connect(self.browse_venv_path)
+        venv_layout.addWidget(self.venv_input)
+        venv_layout.addWidget(venv_browse_btn)
+        venv_widget.setLayout(venv_layout)
         self.venv_input.setVisible(False)
         self.venv_label.setVisible(False)
-        layout.addRow(self.venv_label, self.venv_input)
+        venv_widget.setVisible(False)
+        self.venv_widget = venv_widget  # Store reference to toggle visibility
+        layout.addRow(self.venv_label, venv_widget)
         
         self.args_input = QLineEdit()
         self.args_input.setPlaceholderText("e.g., start, run dev, --port 3000")
@@ -117,6 +140,7 @@ class ServerDialog(QDialog):
         # Show/hide venv field and label (only for Flask)
         self.venv_label.setVisible(is_flask)
         self.venv_input.setVisible(is_flask)
+        self.venv_widget.setVisible(is_flask)
         if not is_flask:
             # Clear venv input when switching to Node.js
             self.venv_input.clear()
@@ -164,4 +188,88 @@ class ServerDialog(QDialog):
             data["python_command"] = None  # Not used for Node.js
         
         return data
+    
+    def browse_server_path(self):
+        """Browse for server path (file or directory)"""
+        current_path = self.path_input.text().strip()
+        
+        # Determine if we should use file or directory dialog
+        # For Node.js, it can be either file or directory
+        # For Flask, it's typically a file
+        is_flask = (self.server_type_input.currentText() == "Flask")
+        
+        if is_flask:
+            # Flask: browse for Python file
+            start_dir = ""
+            if current_path:
+                if os.path.isfile(current_path):
+                    start_dir = os.path.dirname(current_path)
+                elif os.path.isdir(current_path):
+                    start_dir = current_path
+                else:
+                    start_dir = os.path.dirname(current_path) if os.path.dirname(current_path) else ""
+            
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Python File",
+                start_dir,
+                "Python Files (*.py);;All Files (*)"
+            )
+            if file_path:
+                self.path_input.setText(file_path)
+        else:
+            # Node.js: can be either file or directory
+            # Prefer file dialog, but if current path is a directory, use directory dialog
+            start_dir = ""
+            use_dir_dialog = False
+            
+            if current_path:
+                if os.path.isdir(current_path):
+                    start_dir = current_path
+                    use_dir_dialog = True
+                elif os.path.isfile(current_path):
+                    start_dir = os.path.dirname(current_path)
+                else:
+                    start_dir = os.path.dirname(current_path) if os.path.dirname(current_path) else ""
+            
+            if use_dir_dialog:
+                # Use directory dialog if current path is a directory
+                dir_path = QFileDialog.getExistingDirectory(
+                    self,
+                    "Select Server Directory",
+                    start_dir
+                )
+                if dir_path:
+                    self.path_input.setText(dir_path)
+            else:
+                # Use file dialog for .js files
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Select JavaScript File",
+                    start_dir,
+                    "JavaScript Files (*.js *.mjs *.cjs);;All Files (*)"
+                )
+                if file_path:
+                    self.path_input.setText(file_path)
+    
+    def browse_venv_path(self):
+        """Browse for virtual environment directory"""
+        current_path = self.venv_input.text().strip()
+        
+        # Start from current path if it exists, otherwise from parent of server path
+        start_dir = current_path if current_path and os.path.exists(current_path) else ""
+        if not start_dir and self.path_input.text().strip():
+            server_path = self.path_input.text().strip()
+            if os.path.isfile(server_path):
+                start_dir = os.path.dirname(server_path)
+            elif os.path.isdir(server_path):
+                start_dir = server_path
+        
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Virtual Environment Directory",
+            start_dir
+        )
+        if dir_path:
+            self.venv_input.setText(dir_path)
 

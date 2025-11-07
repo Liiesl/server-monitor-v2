@@ -46,7 +46,7 @@ class ServerManager(QObject):
         self.metrics_persistence.cleanup_all_old_data()
     
     def load_settings(self):
-        """Load application settings from settings.json"""
+        """Load application settings from settings.json, creating it with defaults if not available"""
         if os.path.exists(self.settings_file):
             try:
                 with open(self.settings_file, 'r') as f:
@@ -55,11 +55,34 @@ class ServerManager(QObject):
                 print(f"Error loading settings: {e}")
                 self.settings = {}
         else:
+            # File doesn't exist, create it with default values
             self.settings = {}
         
         # Set defaults if not present
-        if "python_command" not in self.settings:
-            self.settings["python_command"] = "python"
+        defaults = {
+            "python_command": "python",
+            "node_command": "node",
+            "flask_command": "flask",
+            "tray_shortcut": "Ctrl+Alt+S"
+        }
+        
+        settings_changed = False
+        for key, default_value in defaults.items():
+            if key not in self.settings:
+                self.settings[key] = default_value
+                settings_changed = True
+        
+        # If file didn't exist or we added missing defaults, save it
+        if not os.path.exists(self.settings_file) or settings_changed:
+            self.save_settings()
+    
+    def save_settings(self):
+        """Save application settings to settings.json"""
+        try:
+            with open(self.settings_file, 'w') as f:
+                json.dump(self.settings, f, indent=2)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
     
     def load_config(self):
         """Load server configurations from file"""
@@ -301,9 +324,9 @@ class ServerManager(QObject):
             del self.processes[name]
             
             # Stop and clean up log reader thread
-            if name in self.log_readers:
-                self.log_readers[name].stop()
-                del self.log_readers[name]
+            log_reader = self.log_readers.pop(name, None)
+            if log_reader:
+                log_reader.stop()
             
             # Clean up psutil tracking
             if name in self.psutil_processes:
@@ -348,9 +371,9 @@ class ServerManager(QObject):
                 # Process has ended
                 del self.processes[name]
                 # Stop and clean up log reader thread
-                if name in self.log_readers:
-                    self.log_readers[name].stop()
-                    del self.log_readers[name]
+                log_reader = self.log_readers.pop(name, None)
+                if log_reader:
+                    log_reader.stop()
                 # Clean up psutil tracking
                 if name in self.psutil_processes:
                     del self.psutil_processes[name]
@@ -386,9 +409,9 @@ class ServerManager(QObject):
                 if name in self.processes:
                     del self.processes[name]
                 # Stop and clean up log reader thread
-                if name in self.log_readers:
-                    self.log_readers[name].stop()
-                    del self.log_readers[name]
+                log_reader = self.log_readers.pop(name, None)
+                if log_reader:
+                    log_reader.stop()
                 del self.psutil_processes[name]
                 if name in self.last_metrics:
                     del self.last_metrics[name]
@@ -426,9 +449,9 @@ class ServerManager(QObject):
             if name in self.processes:
                 del self.processes[name]
             # Stop and clean up log reader thread
-            if name in self.log_readers:
-                self.log_readers[name].stop()
-                del self.log_readers[name]
+            log_reader = self.log_readers.pop(name, None)
+            if log_reader:
+                log_reader.stop()
             if name in self.psutil_processes:
                 del self.psutil_processes[name]
             if name in self.last_metrics:
@@ -514,8 +537,9 @@ class ServerManager(QObject):
         
         # Ensure all log readers are stopped
         for name in list(self.log_readers.keys()):
-            self.log_readers[name].stop()
-            del self.log_readers[name]
+            log_reader = self.log_readers.pop(name, None)
+            if log_reader:
+                log_reader.stop()
     
     def save_log(self, server_name: str, log_line: str):
         """Save a log line to persistent storage"""

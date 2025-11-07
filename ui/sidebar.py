@@ -14,6 +14,8 @@ class SidebarWidget(QWidget):
     
     item_selected = Signal(str)  # Emits "dashboard" or server name
     context_action = Signal(str, str)  # Emits (action, server_name) - action: "start", "stop", "restart", "edit", "remove"
+    add_server_requested = Signal()  # Emits when Add Server button is clicked
+    settings_requested = Signal()  # Emits when Settings button is clicked
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,6 +68,45 @@ class SidebarWidget(QWidget):
         # Stretch to push items to top
         layout.addStretch()
         
+        # Action buttons section (at bottom)
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.Shape.HLine)
+        separator2.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator2)
+        
+        # Add Server button
+        self.add_server_btn = QPushButton("+ Add Server")
+        self.add_server_btn.setProperty("original_text", "+ Add Server")
+        self.add_server_btn.setFixedHeight(BUTTON_HEIGHT_STANDARD)
+        self.add_server_btn.clicked.connect(self.on_add_server_clicked)
+        # Style for Add Server button (success/green style)
+        self.add_server_btn.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 10px 15px;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                background-color: #4caf50;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
+        layout.addWidget(self.add_server_btn)
+        
+        # Settings button
+        self.settings_btn = QPushButton("⚙ Settings")
+        self.settings_btn.setProperty("original_text", "⚙ Settings")
+        self.settings_btn.setFixedHeight(BUTTON_HEIGHT_STANDARD)
+        self.settings_btn.clicked.connect(self.on_settings_clicked)
+        layout.addWidget(self.settings_btn)
+        
         # Set initial width
         self.setFixedWidth(self.expanded_width)
         
@@ -90,6 +131,11 @@ class SidebarWidget(QWidget):
                     btn.setText(original_text[0] if len(original_text) > 0 else "S")
                 # Reapply color to maintain status indication
                 self.update_server_button_color(name)
+            # Update action buttons
+            if hasattr(self, 'add_server_btn'):
+                self.add_server_btn.setText("+")
+            if hasattr(self, 'settings_btn'):
+                self.settings_btn.setText("⚙")
         else:
             self.setFixedWidth(self.expanded_width)
             self.toggle_btn.setText("☰")
@@ -102,6 +148,11 @@ class SidebarWidget(QWidget):
                     btn.setText(original_text)
                 # Reapply color to maintain status indication
                 self.update_server_button_color(name)
+            # Update action buttons
+            if hasattr(self, 'add_server_btn'):
+                self.add_server_btn.setText("+ Add Server")
+            if hasattr(self, 'settings_btn'):
+                self.settings_btn.setText("⚙ Settings")
     
     def update_server_list(self, servers: Dict):
         """Update the server list in sidebar"""
@@ -255,4 +306,12 @@ class SidebarWidget(QWidget):
         
         # Emit signal
         self.item_selected.emit(name)
+    
+    def on_add_server_clicked(self):
+        """Handle Add Server button click"""
+        self.add_server_requested.emit()
+    
+    def on_settings_clicked(self):
+        """Handle Settings button click"""
+        self.settings_requested.emit()
 

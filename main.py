@@ -2,12 +2,14 @@
 Node.js Server Manager - PySide6 Application with System Tray
 """
 import sys
-from typing import Dict
+import ctypes
+from ctypes import wintypes
+from typing import Dict, Optional
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout,
     QStackedWidget, QSystemTrayIcon, QMenu, QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QAbstractNativeEventFilter
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction
 
 from server_manager import ServerManager
@@ -15,7 +17,45 @@ from ui.sidebar import SidebarWidget
 from ui.dashboard import DashboardView
 from ui.server_detail import ServerDetailView
 from ui.server_dialog import ServerDialog
+from ui.settings_dialog import SettingsDialog
 from ui.metrics_monitor import MetricsMonitor
+
+# Windows API constants
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+
+
+class GlobalShortcutFilter(QAbstractNativeEventFilter):
+    """Native event filter to catch global hotkey messages"""
+    
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+    
+    def nativeEventFilter(self, eventType, message):
+        """Filter native events for hotkey messages"""
+        if sys.platform == "win32":
+            # eventType can be bytes or string depending on PySide6 version
+            try:
+                event_type_str = eventType if isinstance(eventType, str) else (eventType.decode('utf-8') if isinstance(eventType, bytes) else str(eventType))
+            except:
+                event_type_str = str(eventType)
+            
+            if "windows" in event_type_str.lower() or "win32" in event_type_str.lower():
+                try:
+                    # Convert VoidPtr to integer, then to ctypes pointer
+                    msg_ptr = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG))
+                    msg = msg_ptr.contents
+                    if msg.message == WM_HOTKEY:
+                        self.callback()
+                        return True, 0
+                except (ValueError, TypeError, AttributeError, OverflowError) as e:
+                    # Silently ignore conversion errors
+                    pass
+        return False, 0
 
 
 class MainWindow(QMainWindow):
@@ -26,8 +66,11 @@ class MainWindow(QMainWindow):
         self.server_manager = ServerManager()
         self.server_views: Dict[str, ServerDetailView] = {}
         self.current_view = None
+        self.hotkey_id = 1  # Unique ID for the hotkey
+        self.shortcut_filter = None
         self.init_ui()
         self.init_system_tray()
+        self.init_global_shortcut()
         
         # Connect signals to slot handlers
         self.server_manager.server_status_changed.connect(self.on_server_status_changed)
@@ -65,6 +108,8 @@ class MainWindow(QMainWindow):
         self.sidebar = SidebarWidget(self)
         self.sidebar.item_selected.connect(self.on_sidebar_item_selected)
         self.sidebar.context_action.connect(self.on_sidebar_context_action)
+        self.sidebar.add_server_requested.connect(self.add_server)
+        self.sidebar.settings_requested.connect(self.open_settings)
         main_layout.addWidget(self.sidebar)
         
         # Stacked widget for main content area
@@ -116,25 +161,166 @@ class MainWindow(QMainWindow):
         self.tray_icon.setToolTip("Node.js Server Manager")
         
         # Create tray menu
-        tray_menu = QMenu()
+        self.tray_menu = QMenu()
+        self.update_tray_menu()
+        
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        self.tray_icon.show()
+    
+    def update_tray_menu(self):
+        """Update the tray menu (useful when settings change)"""
+        self.tray_menu.clear()
         
         show_action = QAction("Show Window", self)
         show_action.triggered.connect(self.show)
-        tray_menu.addAction(show_action)
+        self.tray_menu.addAction(show_action)
         
         hide_action = QAction("Hide Window", self)
         hide_action.triggered.connect(self.hide)
-        tray_menu.addAction(hide_action)
+        self.tray_menu.addAction(hide_action)
         
-        tray_menu.addSeparator()
+        self.tray_menu.addSeparator()
+        
+        settings_action = QAction("Settings...", self)
+        settings_action.triggered.connect(self.open_settings)
+        self.tray_menu.addAction(settings_action)
+        
+        self.tray_menu.addSeparator()
+        
+        # Show current shortcut in menu
+        shortcut_str = self.server_manager.settings.get("tray_shortcut", "Ctrl+Alt+S")
+        shortcut_info = QAction(f"Shortcut: {shortcut_str}", self)
+        shortcut_info.setEnabled(False)  # Make it non-clickable
+        self.tray_menu.addAction(shortcut_info)
+        
+        self.tray_menu.addSeparator()
         
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.quit_application)
-        tray_menu.addAction(quit_action)
+        self.tray_menu.addAction(quit_action)
+    
+    def init_global_shortcut(self):
+        """Initialize global keyboard shortcut to show/hide window"""
+        if sys.platform != "win32":
+            # Global shortcuts only supported on Windows for now
+            return
         
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.activated.connect(self.tray_icon_activated)
-        self.tray_icon.show()
+        shortcut_str = self.server_manager.settings.get("tray_shortcut", "Ctrl+Alt+S")
+        if self.register_global_shortcut(shortcut_str):
+            # Install native event filter to catch hotkey messages
+            self.shortcut_filter = GlobalShortcutFilter(self.toggle_window_from_tray)
+            QApplication.instance().installNativeEventFilter(self.shortcut_filter)
+    
+    def parse_shortcut(self, shortcut_str: str) -> Optional[tuple]:
+        """
+        Parse shortcut string like "Ctrl+Alt+S" into (modifiers, vk_code)
+        Returns (modifiers, vk_code) or None if invalid
+        """
+        if sys.platform != "win32":
+            return None
+        
+        parts = shortcut_str.upper().split('+')
+        modifiers = 0
+        key = None
+        
+        for part in parts:
+            part = part.strip()
+            if part == "CTRL" or part == "CONTROL":
+                modifiers |= MOD_CONTROL
+            elif part == "ALT":
+                modifiers |= MOD_ALT
+            elif part == "SHIFT":
+                modifiers |= MOD_SHIFT
+            elif part == "WIN" or part == "WINDOWS":
+                modifiers |= MOD_WIN
+            else:
+                # Assume it's the key
+                if len(part) == 1:
+                    # Single character key
+                    key = ord(part)
+                else:
+                    # Named key - map common keys
+                    key_map = {
+                        "F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
+                        "F5": 0x74, "F6": 0x75, "F7": 0x76, "F8": 0x77,
+                        "F9": 0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B,
+                        "SPACE": 0x20, "ENTER": 0x0D, "TAB": 0x09,
+                        "ESC": 0x1B, "ESCAPE": 0x1B,
+                    }
+                    key = key_map.get(part)
+                    if key is None:
+                        return None
+        
+        if key is None:
+            return None
+        
+        return (modifiers, key)
+    
+    def register_global_shortcut(self, shortcut_str: str) -> bool:
+        """
+        Register a global hotkey using Windows API
+        Returns True if successful, False otherwise
+        """
+        if sys.platform != "win32":
+            return False
+        
+        parsed = self.parse_shortcut(shortcut_str)
+        if parsed is None:
+            print(f"Invalid shortcut format: {shortcut_str}")
+            return False
+        
+        modifiers, vk_code = parsed
+        
+        # Get user32.dll functions
+        user32 = ctypes.windll.user32
+        
+        # Get window handle
+        hwnd = int(self.winId())
+        
+        # Unregister existing hotkey if already registered
+        user32.UnregisterHotKey(hwnd, self.hotkey_id)
+        
+        # Register the hotkey
+        # RegisterHotKey(hwnd, id, modifiers, vk)
+        result = user32.RegisterHotKey(hwnd, self.hotkey_id, modifiers, vk_code)
+        
+        if result == 0:
+            error = ctypes.get_last_error()
+            if error == 1409:  # ERROR_HOTKEY_ALREADY_REGISTERED
+                print(f"Hotkey {shortcut_str} is already registered by another application")
+            else:
+                print(f"Failed to register hotkey {shortcut_str}: error {error}")
+            return False
+        
+        return True
+    
+    def unregister_global_shortcut(self):
+        """Unregister the global hotkey"""
+        if sys.platform == "win32":
+            try:
+                hwnd = int(self.winId())
+                ctypes.windll.user32.UnregisterHotKey(hwnd, self.hotkey_id)
+            except:
+                pass
+        if self.shortcut_filter:
+            QApplication.instance().removeNativeEventFilter(self.shortcut_filter)
+    
+    def toggle_window_from_tray(self):
+        """Toggle window visibility when shortcut is pressed"""
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+    
+    def open_settings(self):
+        """Open settings dialog"""
+        dialog = SettingsDialog(self)
+        if dialog.exec():
+            # Update tray menu to reflect any changes
+            self.update_tray_menu()
     
     def tray_icon_activated(self, reason):
         """Handle system tray icon activation"""
@@ -156,6 +342,8 @@ class MainWindow(QMainWindow):
     
     def quit_application(self):
         """Quit the application"""
+        # Unregister global shortcut
+        self.unregister_global_shortcut()
         # Stop metrics monitor thread
         if hasattr(self, 'metrics_monitor'):
             self.metrics_monitor.stop()
