@@ -11,6 +11,9 @@
 !define APP_UNINST "Uninstall.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\${APP_NAME}"
 
+; Build paths - script is in .github\script\, workspace root is two levels up
+!define WORKSPACE_ROOT "${__FILEDIR__}\..\.."
+
 ; Installer Settings
 Name "${APP_NAME}"
 OutFile "dist\NodeJS_Server_Manager_Setup.exe"
@@ -46,21 +49,22 @@ Section "Application" SecApp
     SetOutPath "$INSTDIR"
     
     ; Copy the main executable and all dependencies from Nuitka standalone build
+    ; Use workspace root path constructed from script location
     ; Try the expected standalone build path first
-    IfFileExists "dist\main.dist\main.exe" 0 copy_alternative
+    IfFileExists "${WORKSPACE_ROOT}\dist\main.dist\main.exe" 0 copy_alternative
     
     ; File exists, copy from main.dist
-    File "dist\main.dist\main.exe"
+    File "${WORKSPACE_ROOT}\dist\main.dist\main.exe"
     ; Copy all DLLs and dependencies from the dist folder (exclude build artifacts)
-    File /r /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" /x "main.build" "dist\main.dist\*.*"
+    File /r /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" /x "main.build" "${WORKSPACE_ROOT}\dist\main.dist\*.*"
     Goto copy_done
     
     copy_alternative:
         ; Alternative: if build structure is different, try direct dist path
-        IfFileExists "dist\main.exe" 0 copy_error
-        File "dist\main.exe"
+        IfFileExists "${WORKSPACE_ROOT}\dist\main.exe" 0 copy_error
+        File "${WORKSPACE_ROOT}\dist\main.exe"
         ; Copy dependencies but exclude build directory
-        File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" "dist\*.*"
+        File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" "${WORKSPACE_ROOT}\dist\*.*"
         Goto copy_done
     
     copy_error:
