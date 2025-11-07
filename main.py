@@ -296,7 +296,10 @@ class MainWindow(QMainWindow):
             
             if self.server_manager.add_server(
                 data["name"], data["path"], data["command"], 
-                data["args"], data["port"]
+                data["args"], data["port"],
+                data.get("server_type", "nodejs"),
+                data.get("python_command"),
+                data.get("venv_path")
             ):
                 self.update_dashboard()
                 self.sidebar.update_server_list(self.server_manager.get_all_servers())
@@ -318,9 +321,16 @@ class MainWindow(QMainWindow):
         
         if dialog.exec():
             data = dialog.get_data()
+            # Handle venv_path - only pass if server_type is flask
+            venv_path = None
+            if data.get("server_type") == "flask":
+                venv_path = data.get("venv_path", "")
+            
             if self.server_manager.update_server(
                 name, data["path"], data["command"], 
-                data["args"], data["port"]
+                data["args"], data["port"],
+                data.get("server_type"), data.get("python_command"),
+                venv_path
             ):
                 self.update_dashboard()
                 # Update detail view if visible

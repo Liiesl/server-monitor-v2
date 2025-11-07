@@ -1,8 +1,8 @@
 """
 Dashboard view showing summary statistics
 """
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
-from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QScrollArea, QSizePolicy
+from PySide6.QtCore import Qt, QTimer
 from server_manager import ServerManager
 from .constants import (
     SPACING_LARGE, SPACING_MEDIUM, SPACING_NORMAL, SPACING_SMALL, SPACING_MINIMAL
@@ -30,15 +30,34 @@ class DashboardView(QWidget):
     def init_ui(self):
         """Initialize dashboard UI"""
         self.setStyleSheet(get_dashboard_style())
-        layout = QVBoxLayout()
-        layout.setContentsMargins(SPACING_LARGE, SPACING_LARGE, SPACING_LARGE, SPACING_LARGE)
-        layout.setSpacing(SPACING_MEDIUM)
-        self.setLayout(layout)
+        
+        # Main layout for the widget
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        self.setLayout(main_layout)
+        
+        # Create scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        
+        # Create content widget
+        content_widget = QWidget()
+        content_widget.setStyleSheet(get_dashboard_style())
+        # Set size policy to prevent horizontal expansion
+        content_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(SPACING_LARGE, SPACING_LARGE, SPACING_LARGE, SPACING_LARGE)
+        content_layout.setSpacing(SPACING_MEDIUM)
+        content_widget.setLayout(content_layout)
         
         # Title
         title_label = QLabel("Dashboard")
         title_label.setStyleSheet(get_label_style("title", "primary"))
-        layout.addWidget(title_label)
+        content_layout.addWidget(title_label)
         
         # Summary stats cards section
         stats_layout = QHBoxLayout()
@@ -52,18 +71,18 @@ class DashboardView(QWidget):
         self.ram_label = self._create_stat_card("Total RAM", "-- MB", stats_layout, color="info")
         
         stats_layout.addStretch()
-        layout.addLayout(stats_layout)
+        content_layout.addLayout(stats_layout)
         
         # Performance graphs section
         graphs_label = QLabel("Performance Graphs")
         graphs_label.setStyleSheet(get_label_style("normal", "primary") + " font-weight: bold;")
-        layout.addWidget(graphs_label)
+        content_layout.addWidget(graphs_label)
         
         self.performance_graphs = PerformanceGraphTabWidget()
         self.performance_graphs.setMinimumHeight(350)
         # Connect time range change signal to update graphs
         self.performance_graphs.time_range_changed.connect(self.update_graphs)
-        layout.addWidget(self.performance_graphs)
+        content_layout.addWidget(self.performance_graphs)
         
         # Add Server button
         button_layout = QHBoxLayout()
@@ -73,10 +92,16 @@ class DashboardView(QWidget):
         self.add_btn.setStyleSheet(get_success_button_style())
         self.add_btn.clicked.connect(self.add_server)
         button_layout.addWidget(self.add_btn)
-        layout.addLayout(button_layout)
+        content_layout.addLayout(button_layout)
         
         # Add stretch to push content to top
-        layout.addStretch()
+        content_layout.addStretch()
+        
+        # Set content widget as scroll area's widget
+        scroll_area.setWidget(content_widget)
+        
+        # Add scroll area to main layout
+        main_layout.addWidget(scroll_area)
         
         # Initial graph update
         self.update_graphs()

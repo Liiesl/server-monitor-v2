@@ -1,5 +1,5 @@
 """
-Server Manager - Handles Node.js server process management
+Server Manager - Handles Node.js and Flask server process management
 """
 import subprocess
 import os
@@ -16,7 +16,7 @@ from metrics_persistence import MetricsPersistence
 
 
 class ServerManager(QObject):
-    """Manages Node.js server processes"""
+    """Manages Node.js and Flask server processes"""
     
     # Signals
     server_status_changed = Signal(str, str)  # (server_name, status)
@@ -25,9 +25,11 @@ class ServerManager(QObject):
     server_stopped = Signal(str)  # server_name
     server_log = Signal(str, str, bool)  # (server_name, log_line, is_error)
     
-    def __init__(self, config_file: str = "servers.json"):
+    def __init__(self, config_file: str = "servers.json", settings_file: str = "settings.json"):
         super().__init__()
         self.config_file = config_file
+        self.settings_file = settings_file
+        self.settings: Dict = {}  # Application settings (python_command, etc.)
         self.servers: Dict[str, Dict] = {}
         self.processes: Dict[str, subprocess.Popen] = {}
         self.psutil_processes: Dict[str, psutil.Process] = {}
@@ -38,9 +40,26 @@ class ServerManager(QObject):
         self.log_persistence = LogPersistence()  # Log persistence handler
         self.metrics_persistence = MetricsPersistence()  # Metrics persistence handler
         self.last_cleanup_time: Dict[str, float] = {}  # Track last cleanup time per server
+        self.load_settings()
         self.load_config()
         # Cleanup old data on startup
         self.metrics_persistence.cleanup_all_old_data()
+    
+    def load_settings(self):
+        """Load application settings from settings.json"""
+        if os.path.exists(self.settings_file):
+            try:
+                with open(self.settings_file, 'r') as f:
+                    self.settings = json.load(f)
+            except Exception as e:
+                print(f"Error loading settings: {e}")
+                self.settings = {}
+        else:
+            self.settings = {}
+        
+        # Set defaults if not present
+        if "python_command" not in self.settings:
+            self.settings["python_command"] = "python"
     
     def load_config(self):
         """Load server configurations from file"""
@@ -53,6 +72,16 @@ class ServerManager(QObject):
                 self.servers = {}
         else:
             self.servers = {}
+        
+        # Ensure backward compatibility: set defaults for existing servers
+        default_python_cmd = self.settings.get("python_command", "python")
+        for name, config in self.servers.items():
+            # Set default server_type if not present (backward compatibility)
+            if "server_type" not in config:
+                config["server_type"] = "nodejs"
+            # Set default python_command if not present (for Flask servers)
+            if "python_command" not in config:
+                config["python_command"] = default_python_cmd
     
     def save_config(self):
         """Save server configurations to file"""
@@ -62,19 +91,44 @@ class ServerManager(QObject):
         except Exception as e:
             print(f"Error saving config: {e}")
     
-    def add_server(self, name: str, path: str, command: str = "node", args: str = "", port: Optional[int] = None):
-        """Add a new server configuration"""
+    def add_server(self, name: str, path: str, command: str = "node", args: str = "", port: Optional[int] = None,
+                  server_type: str = "nodejs", python_command: Optional[str] = None, venv_path: Optional[str] = None):
+        """Add a new server configuration
+        
+        Args:
+            name: Server name
+            path: Server path (file or directory)
+            command: Command to run (for Node.js: node, npm, yarn, etc.)
+            args: Additional arguments
+            port: Optional port number
+            server_type: Server type ("nodejs" or "flask"), defaults to "nodejs"
+            python_command: Python command for Flask servers (py, python, python3), 
+                          defaults to settings value
+            venv_path: Virtual environment path for Flask servers (optional)
+        """
         if name in self.servers:
             return False
         
-        self.servers[name] = {
+        # Default python_command to settings value if not provided
+        if python_command is None:
+            python_command = self.settings.get("python_command", "python")
+        
+        server_config = {
             "path": path,
             "command": command,
             "args": args,
             "port": port,
+            "server_type": server_type,
+            "python_command": python_command,
             "status": "stopped",
             "created_at": datetime.now().isoformat()
         }
+        
+        # Add venv_path if provided (for Flask servers)
+        if venv_path:
+            server_config["venv_path"] = venv_path
+        
+        self.servers[name] = server_config
         self.save_config()
         return True
     
@@ -92,8 +146,20 @@ class ServerManager(QObject):
             return True
         return False
     
-    def update_server(self, name: str, path: str = None, command: str = None, args: str = None, port: int = None):
-        """Update server configuration"""
+    def update_server(self, name: str, path: str = None, command: str = None, args: str = None, port: int = None,
+                      server_type: str = None, python_command: str = None, venv_path: str = None):
+        """Update server configuration
+        
+        Args:
+            name: Server name
+            path: Server path (file or directory)
+            command: Command to run (for Node.js: node, npm, yarn, etc.)
+            args: Additional arguments
+            port: Optional port number
+            server_type: Server type ("nodejs" or "flask")
+            python_command: Python command for Flask servers (py, python, python3)
+            venv_path: Virtual environment path for Flask servers (use empty string to remove)
+        """
         if name not in self.servers:
             return False
         
@@ -105,12 +171,22 @@ class ServerManager(QObject):
             self.servers[name]["args"] = args
         if port is not None:
             self.servers[name]["port"] = port
+        if server_type is not None:
+            self.servers[name]["server_type"] = server_type
+        if python_command is not None:
+            self.servers[name]["python_command"] = python_command
+        if venv_path is not None:
+            if venv_path:
+                self.servers[name]["venv_path"] = venv_path
+            else:
+                # Remove venv_path if empty string provided
+                self.servers[name].pop("venv_path", None)
         
         self.save_config()
         return True
     
     def start_server(self, name: str) -> bool:
-        """Start a Node.js server"""
+        """Start a server (Node.js or Flask)"""
         if name not in self.servers:
             return False
         
@@ -125,11 +201,50 @@ class ServerManager(QObject):
             return False
         
         try:
-            # Build command
-            cmd = [server_config["command"]]
-            if server_config.get("args"):
-                cmd.extend(server_config["args"].split())
-            cmd.append(server_path)
+            # Get server type (default to "nodejs" for backward compatibility)
+            server_type = server_config.get("server_type", "nodejs")
+            
+            # Build command based on server type
+            if server_type == "flask":
+                # Flask: [python_command] [path] [args]
+                # Check if venv is specified and use Python from venv
+                venv_path = server_config.get("venv_path")
+                if venv_path:
+                    # Resolve venv path (can be relative or absolute)
+                    server_dir = os.path.dirname(server_path) if os.path.isfile(server_path) else server_path
+                    if not os.path.isabs(venv_path):
+                        # Relative path - resolve relative to server directory
+                        venv_path = os.path.join(server_dir, venv_path)
+                    
+                    # Determine Python executable path based on OS
+                    if os.name == 'nt':  # Windows
+                        python_exe = os.path.join(venv_path, "Scripts", "python.exe")
+                        if not os.path.exists(python_exe):
+                            # Fallback to python.exe in venv root
+                            python_exe = os.path.join(venv_path, "python.exe")
+                    else:  # Unix/Linux/Mac
+                        python_exe = os.path.join(venv_path, "bin", "python")
+                    
+                    # Use venv Python if it exists, otherwise fall back to configured command
+                    if os.path.exists(python_exe):
+                        python_cmd = python_exe
+                    else:
+                        # Venv Python not found, use configured command
+                        python_cmd = server_config.get("python_command") or self.settings.get("python_command", "python")
+                else:
+                    # No venv, use configured Python command
+                    python_cmd = server_config.get("python_command") or self.settings.get("python_command", "python")
+                
+                cmd = [python_cmd]
+                cmd.append(server_path)
+                if server_config.get("args"):
+                    cmd.extend(server_config["args"].split())
+            else:
+                # Node.js: [command] [args] [path]
+                cmd = [server_config.get("command", "node")]
+                if server_config.get("args"):
+                    cmd.extend(server_config["args"].split())
+                cmd.append(server_path)
             
             # Start process
             process = subprocess.Popen(
