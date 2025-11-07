@@ -18,6 +18,7 @@ OutFile "..\..\dist\NodeJS_Server_Manager_Setup.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKCU "Software\${APP_NAME}" ""
 RequestExecutionLevel user
+SetCompressor /FINAL /SOLID lzma
 
 ; Interface Settings
 !define MUI_ABORTWARNING
@@ -40,36 +41,18 @@ RequestExecutionLevel user
 !insertmacro MUI_LANGUAGE "English"
 
 ; Installer Sections
-Section "Application" SecApp
+Section "Main Application" SecApp
     SectionIn RO
     
     ; Set output path to the installation directory
     SetOutPath "$INSTDIR"
     
-    ; Copy the main executable and all dependencies from Nuitka standalone build
-    ; All paths are relative to installer location at .github\script\
-    ; Try the expected standalone build path first
-    IfFileExists "..\..\dist\main.dist\main.exe" 0 copy_alternative
+    DetailPrint "Installing application files..."
     
-    ; File exists, copy from main.dist
-    File "..\..\dist\main.dist\main.exe"
-    ; Copy all DLLs and dependencies from the dist folder (exclude build artifacts)
-    File /r /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" /x "main.build" "..\..\dist\main.dist\*.*"
-    Goto copy_done
-    
-    copy_alternative:
-        ; Alternative: if build structure is different, try direct dist path
-        IfFileExists "..\..\dist\main.exe" 0 copy_error
-        File "..\..\dist\main.exe"
-        ; Copy dependencies but exclude build directory
-        File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.txt" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" /x "static_src" "..\..\dist\*.*"
-        Goto copy_done
-    
-    copy_error:
-        MessageBox MB_OK|MB_ICONSTOP "Error: Build output not found.$\n$\nExpected 'dist\main.dist\main.exe' or 'dist\main.exe'$\n$\nPlease check the Nuitka build completed successfully."
-        Abort
-    
-    copy_done:
+    ; Copy all files from Nuitka standalone build
+    ; Path is relative to installer location at .github\script\
+    ; Copy everything recursively, excluding build artifacts
+    File /r /x "main.build" /x "*.c" /x "*.o" /x "*.const" /x "*.h" /x "*.bat" /x "*.py" /x ".gitignore" /x ".sconsign*" "..\..\dist\main.dist\*"
     
     ; Create directories for logs and metrics
     CreateDirectory "$INSTDIR\logs"
@@ -100,16 +83,16 @@ SectionEnd
 
 ; Uninstaller Section
 Section "Uninstall"
-    ; Remove files and directories
+    DetailPrint "Removing application files..."
     RMDir /r "$INSTDIR"
     
-    ; Remove Start Menu shortcuts
-    RMDir /r "$SMPROGRAMS\${APP_NAME}"
-    
-    ; Remove Desktop shortcut
+    DetailPrint "Removing shortcuts..."
     Delete "$DESKTOP\${APP_NAME}.lnk"
+    Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+    Delete "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk"
+    RMDir "$SMPROGRAMS\${APP_NAME}"
     
-    ; Remove registry entries
+    DetailPrint "Removing registry keys..."
     DeleteRegKey HKCU "Software\${APP_NAME}"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 SectionEnd
