@@ -11,8 +11,9 @@
 !define APP_UNINST "Uninstall.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\${APP_NAME}"
 
-; Build paths - script is in .github\script\, workspace root is two levels up
-!define WORKSPACE_ROOT "${__FILEDIR__}\..\.."
+; Build paths - use relative to execution directory (workspace root)
+; NSIS is executed from workspace root with: makensis .github\script\installer.nsi
+!define WORKSPACE_ROOT "."
 
 ; Installer Settings
 Name "${APP_NAME}"
