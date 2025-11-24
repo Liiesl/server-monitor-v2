@@ -118,7 +118,8 @@ class ServerManager(QObject):
             print(f"Error saving config: {e}")
     
     def add_server(self, name: str, path: str, command: str = "node", args: str = "", port: Optional[int] = None,
-                  server_type: str = "nodejs", python_command: Optional[str] = None, venv_path: Optional[str] = None):
+                  server_type: str = "nodejs", python_command: Optional[str] = None, venv_path: Optional[str] = None,
+                  flaresolverr_type: Optional[str] = None):
         """Add a new server configuration
         
         Args:
@@ -131,6 +132,7 @@ class ServerManager(QObject):
             python_command: Python command for Flask servers (py, python, python3), 
                           defaults to settings value
             venv_path: Virtual environment path for Flask servers (optional)
+            flaresolverr_type: Type of FlareSolverr installation ("source" or "binary")
         """
         if name in self.servers:
             return False
@@ -153,6 +155,10 @@ class ServerManager(QObject):
         # Add venv_path if provided (for Flask servers)
         if venv_path:
             server_config["venv_path"] = venv_path
+            
+        # Add flaresolverr_type if provided
+        if flaresolverr_type:
+            server_config["flaresolverr_type"] = flaresolverr_type
         
         self.servers[name] = server_config
         self.save_config()
@@ -173,7 +179,8 @@ class ServerManager(QObject):
         return False
     
     def update_server(self, name: str, path: str = None, command: str = None, args: str = None, port: int = None,
-                      server_type: str = None, python_command: str = None, venv_path: str = None):
+                      server_type: str = None, python_command: str = None, venv_path: str = None,
+                      flaresolverr_type: str = None):
         """Update server configuration
         
         Args:
@@ -185,6 +192,7 @@ class ServerManager(QObject):
             server_type: Server type ("nodejs" or "flask")
             python_command: Python command for Flask servers (py, python, python3)
             venv_path: Virtual environment path for Flask servers (use empty string to remove)
+            flaresolverr_type: Type of FlareSolverr installation ("source" or "binary")
         """
         if name not in self.servers:
             return False
@@ -207,6 +215,8 @@ class ServerManager(QObject):
             else:
                 # Remove venv_path if empty string provided
                 self.servers[name].pop("venv_path", None)
+        if flaresolverr_type is not None:
+            self.servers[name]["flaresolverr_type"] = flaresolverr_type
         
         self.save_config()
         return True
@@ -263,6 +273,28 @@ class ServerManager(QObject):
                 
                 cmd = [python_cmd]
                 cmd.append(server_path)
+                if server_config.get("args"):
+                    cmd.extend(server_config["args"].split())
+            elif server_type == "flaresolverr":
+                # FlareSolverr
+                flaresolverr_type = server_config.get("flaresolverr_type", "source")
+                
+                if flaresolverr_type == "source":
+                    # Run from source: [python_command] src/flaresolverr.py
+                    # Path is the git clone directory
+                    python_cmd = server_config.get("python_command") or self.settings.get("python_command", "python")
+                    script_path = os.path.join(server_path, "src", "flaresolverr.py")
+                    
+                    if not os.path.exists(script_path):
+                        print(f"FlareSolverr script not found at {script_path}")
+                        return False
+                        
+                    cmd = [python_cmd, script_path]
+                else:
+                    # Run from binary: [path]
+                    # Path is the executable
+                    cmd = [server_path]
+                
                 if server_config.get("args"):
                     cmd.extend(server_config["args"].split())
             else:
