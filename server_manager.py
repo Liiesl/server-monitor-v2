@@ -21,6 +21,11 @@ class ServerManager(QObject):
     server_log = Signal(str, str, bool)  # (server_name, log_line, is_error)
     port_detected = Signal(str, int)  # (server_name, port)
     
+    # Stack Signals
+    stack_added = Signal()
+    stack_removed = Signal()
+    stack_updated = Signal()
+    
     def __init__(self, config_file: str = "servers.json", settings_file: str = "settings.json"):
         super().__init__()
         self.config_manager = ConfigManager(config_file, settings_file)
@@ -232,6 +237,74 @@ class ServerManager(QObject):
     def detect_port(self, name: str):
         if name in self.instances:
             self.instances[name].detect_port()
+
+    # Stack Management
+    
+    def get_stacks(self) -> Dict:
+        return self.config_manager.get_stacks()
+        
+    def add_stack(self, name: str, server_names: list) -> bool:
+        if self.config_manager.add_stack(name, server_names):
+            self.stack_added.emit()
+            return True
+        return False
+        
+    def remove_stack(self, name: str) -> bool:
+        if self.config_manager.remove_stack(name):
+            self.stack_removed.emit()
+            return True
+        return False
+        
+    def update_stack(self, name: str, server_names: list) -> bool:
+        if self.config_manager.update_stack(name, server_names):
+            self.stack_updated.emit()
+            return True
+        return False
+        
+    def start_stack(self, stack_name: str):
+        """Start all servers in a stack"""
+        stacks = self.get_stacks()
+        if stack_name not in stacks:
+            return
+            
+        server_names = stacks[stack_name]
+        for name in server_names:
+            self.start_server(name)
+            
+    def stop_stack(self, stack_name: str):
+        """Stop all servers in a stack"""
+        stacks = self.get_stacks()
+        if stack_name not in stacks:
+            return
+            
+        server_names = stacks[stack_name]
+        for name in server_names:
+            self.stop_server(name)
+            
+    def get_stack_status(self, stack_name: str) -> str:
+        """
+        Get aggregate status of a stack.
+        Returns: "running" (all running), "stopped" (all stopped), "partial" (mixed)
+        """
+        stacks = self.get_stacks()
+        if stack_name not in stacks:
+            return "stopped"
+            
+        server_names = stacks[stack_name]
+        if not server_names:
+            return "stopped"
+            
+        running_count = 0
+        for name in server_names:
+            if self.get_server_status(name) == "running":
+                running_count += 1
+                
+        if running_count == 0:
+            return "stopped"
+        elif running_count == len(server_names):
+            return "running"
+        else:
+            return "partial"
 
     # Signal handlers
     def _on_status_changed(self, name, status):

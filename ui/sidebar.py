@@ -13,8 +13,11 @@ class SidebarWidget(QWidget):
     """Sidebar navigation widget with collapsible functionality"""
     
     item_selected = Signal(str)  # Emits "dashboard" or server name
+    stack_selected = Signal(str) # Emits stack name
     context_action = Signal(str, str)  # Emits (action, server_name) - action: "start", "stop", "restart", "edit", "remove"
+    stack_context_action = Signal(str, str) # Emits (action, stack_name)
     add_server_requested = Signal()  # Emits when Add Server button is clicked
+    add_stack_requested = Signal() # Emits when Add Stack button is clicked
     settings_requested = Signal()  # Emits when Settings button is clicked
     
     def __init__(self, parent=None):
@@ -25,6 +28,7 @@ class SidebarWidget(QWidget):
         self.selected_item = "dashboard"
         self.server_buttons: Dict[str, QPushButton] = {}
         self.server_statuses: Dict[str, str] = {}  # Track server statuses
+        self.stack_buttons: Dict[str, QPushButton] = {}
         self.init_ui()
     
     def init_ui(self):
@@ -65,6 +69,17 @@ class SidebarWidget(QWidget):
         self.server_container.setLayout(self.server_layout)
         layout.addWidget(self.server_container)
         
+        # Stacks section
+        self.stacks_label = QLabel("Stacks")
+        layout.addWidget(self.stacks_label)
+        
+        self.stack_container = QWidget()
+        self.stack_layout = QVBoxLayout()
+        self.stack_layout.setContentsMargins(0, 0, 0, 0)
+        self.stack_layout.setSpacing(3)
+        self.stack_container.setLayout(self.stack_layout)
+        layout.addWidget(self.stack_container)
+        
         # Stretch to push items to top
         layout.addStretch()
         
@@ -100,6 +115,31 @@ class SidebarWidget(QWidget):
         """)
         layout.addWidget(self.add_server_btn)
         
+        # Add Stack button
+        self.add_stack_btn = QPushButton("+ Add Stack")
+        self.add_stack_btn.setProperty("original_text", "+ Add Stack")
+        self.add_stack_btn.setFixedHeight(BUTTON_HEIGHT_STANDARD)
+        self.add_stack_btn.clicked.connect(self.on_add_stack_clicked)
+        self.add_stack_btn.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 10px 15px;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                background-color: #2196f3;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976d2;
+            }
+            QPushButton:pressed {
+                background-color: #0d47a1;
+            }
+        """)
+        layout.addWidget(self.add_stack_btn)
+        
         # Settings button
         self.settings_btn = QPushButton("⚙ Settings")
         self.settings_btn.setProperty("original_text", "⚙ Settings")
@@ -124,6 +164,7 @@ class SidebarWidget(QWidget):
             # Hide text, show only icons or first letter
             self.dashboard_btn.setText("D")
             self.servers_label.hide()
+            self.stacks_label.hide()
             for name, btn in self.server_buttons.items():
                 # Show first letter or icon
                 original_text = btn.property("original_text")
@@ -131,9 +172,15 @@ class SidebarWidget(QWidget):
                     btn.setText(original_text[0] if len(original_text) > 0 else "S")
                 # Reapply color to maintain status indication
                 self.update_server_button_color(name)
+            for name, btn in self.stack_buttons.items():
+                original_text = btn.property("original_text")
+                if original_text:
+                    btn.setText(original_text[0] if len(original_text) > 0 else "S")
             # Update action buttons
             if hasattr(self, 'add_server_btn'):
                 self.add_server_btn.setText("+")
+            if hasattr(self, 'add_stack_btn'):
+                self.add_stack_btn.setText("+")
             if hasattr(self, 'settings_btn'):
                 self.settings_btn.setText("⚙")
         else:
@@ -142,15 +189,22 @@ class SidebarWidget(QWidget):
             # Show full text
             self.dashboard_btn.setText("Dashboard")
             self.servers_label.show()
+            self.stacks_label.show()
             for name, btn in self.server_buttons.items():
                 original_text = btn.property("original_text")
                 if original_text:
                     btn.setText(original_text)
                 # Reapply color to maintain status indication
                 self.update_server_button_color(name)
+            for name, btn in self.stack_buttons.items():
+                original_text = btn.property("original_text")
+                if original_text:
+                    btn.setText(original_text)
             # Update action buttons
             if hasattr(self, 'add_server_btn'):
                 self.add_server_btn.setText("+ Add Server")
+            if hasattr(self, 'add_stack_btn'):
+                self.add_stack_btn.setText("+ Add Stack")
             if hasattr(self, 'settings_btn'):
                 self.settings_btn.setText("⚙ Settings")
     
@@ -310,8 +364,113 @@ class SidebarWidget(QWidget):
     def on_add_server_clicked(self):
         """Handle Add Server button click"""
         self.add_server_requested.emit()
+        
+    def on_add_stack_clicked(self):
+        """Handle Add Stack button click"""
+        self.add_stack_requested.emit()
     
     def on_settings_clicked(self):
         """Handle Settings button click"""
         self.settings_requested.emit()
+
+    def update_stack_list(self, stacks: Dict):
+        """Update the stack list in sidebar"""
+        # Remove old buttons
+        for btn in list(self.stack_buttons.values()):
+            self.stack_layout.removeWidget(btn)
+            btn.deleteLater()
+        self.stack_buttons.clear()
+        
+        # Add new stack buttons
+        for name in stacks.keys():
+            btn = QPushButton(name)
+            btn.setProperty("original_text", name)
+            btn.setFixedHeight(BUTTON_HEIGHT_STANDARD)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, n=name: self.select_item(n, is_stack=True))
+            # Enable context menu
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            btn.customContextMenuRequested.connect(lambda pos, n=name: self.show_stack_context_menu(pos, n, btn))
+            
+            # Style
+            btn.setStyleSheet("""
+                QPushButton {
+                    text-align: left;
+                    padding: 10px 15px;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 13px;
+                    color: #cccccc;
+                }
+                QPushButton:hover {
+                    background-color: #2a2d2e;
+                }
+                QPushButton:checked {
+                    background-color: #094771;
+                    color: white;
+                }
+            """)
+            
+            self.stack_buttons[name] = btn
+            self.stack_layout.addWidget(btn)
+            
+        # Update collapsed state if needed
+        if self.collapsed:
+            for btn in self.stack_buttons.values():
+                original_text = btn.property("original_text")
+                if original_text:
+                    btn.setText(original_text[0] if len(original_text) > 0 else "S")
+
+    def show_stack_context_menu(self, position, stack_name: str, button: QPushButton):
+        """Show context menu for a stack button"""
+        menu = QMenu(self)
+        
+        # Start action
+        start_action = QAction("Start Stack", self)
+        start_action.triggered.connect(lambda: self.stack_context_action.emit("start", stack_name))
+        menu.addAction(start_action)
+        
+        # Stop action
+        stop_action = QAction("Stop Stack", self)
+        stop_action.triggered.connect(lambda: self.stack_context_action.emit("stop", stack_name))
+        menu.addAction(stop_action)
+        
+        menu.addSeparator()
+        
+        # Edit action
+        edit_action = QAction("Edit Stack", self)
+        edit_action.triggered.connect(lambda: self.stack_context_action.emit("edit", stack_name))
+        menu.addAction(edit_action)
+        
+        # Remove action
+        remove_action = QAction("Remove Stack", self)
+        remove_action.triggered.connect(lambda: self.stack_context_action.emit("remove", stack_name))
+        menu.addAction(remove_action)
+        
+        # Show menu at cursor position
+        menu.exec(button.mapToGlobal(position))
+
+    def select_item(self, name: str, is_stack: bool = False):
+        """Select an item and emit signal"""
+        # Uncheck previous selection
+        if self.selected_item == "dashboard":
+            self.dashboard_btn.setChecked(False)
+        elif self.selected_item in self.server_buttons:
+            self.server_buttons[self.selected_item].setChecked(False)
+        elif self.selected_item in self.stack_buttons:
+            self.stack_buttons[self.selected_item].setChecked(False)
+        
+        # Check new selection
+        self.selected_item = name
+        if name == "dashboard":
+            self.dashboard_btn.setChecked(True)
+            self.item_selected.emit(name)
+        elif is_stack:
+            if name in self.stack_buttons:
+                self.stack_buttons[name].setChecked(True)
+            self.stack_selected.emit(name)
+        else:
+            if name in self.server_buttons:
+                self.server_buttons[name].setChecked(True)
+            self.item_selected.emit(name)
 

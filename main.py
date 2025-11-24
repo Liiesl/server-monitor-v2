@@ -19,6 +19,8 @@ from ui.server_detail import ServerDetailView
 from ui.server_dialog import ServerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.metrics_monitor import MetricsMonitor
+from ui.stack_dialog import StackDialog
+from ui.stack_detail import StackDetailView
 
 # Windows API constants
 WM_HOTKEY = 0x0312
@@ -65,6 +67,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.server_manager = ServerManager()
         self.server_views: Dict[str, ServerDetailView] = {}
+        self.stack_views: Dict[str, StackDetailView] = {}
         self.current_view = None
         self.hotkey_id = 1  # Unique ID for the hotkey
         self.shortcut_filter = None
@@ -80,6 +83,11 @@ class MainWindow(QMainWindow):
         self.server_manager.server_log.connect(self.on_server_log)
         self.server_manager.port_detected.connect(self.on_port_detected)
         
+        # Stack signals
+        self.server_manager.stack_added.connect(self.on_stack_changed)
+        self.server_manager.stack_removed.connect(self.on_stack_changed)
+        self.server_manager.stack_updated.connect(self.on_stack_changed)
+        
         # Create and start metrics monitoring thread
         self.metrics_monitor = MetricsMonitor(self.server_manager)
         self.metrics_monitor.start()
@@ -92,6 +100,7 @@ class MainWindow(QMainWindow):
         # Initial update
         self.update_dashboard()
         self.sidebar.update_server_list(self.server_manager.get_all_servers())
+        self.sidebar.update_stack_list(self.server_manager.get_stacks())
     
     def init_ui(self):
         """Initialize the user interface"""
@@ -108,8 +117,11 @@ class MainWindow(QMainWindow):
         # Sidebar
         self.sidebar = SidebarWidget(self)
         self.sidebar.item_selected.connect(self.on_sidebar_item_selected)
+        self.sidebar.stack_selected.connect(self.on_sidebar_stack_selected)
         self.sidebar.context_action.connect(self.on_sidebar_context_action)
+        self.sidebar.stack_context_action.connect(self.on_sidebar_stack_context_action)
         self.sidebar.add_server_requested.connect(self.add_server)
+        self.sidebar.add_stack_requested.connect(self.add_stack)
         self.sidebar.settings_requested.connect(self.open_settings)
         main_layout.addWidget(self.sidebar)
         
@@ -427,6 +439,10 @@ class MainWindow(QMainWindow):
         # Update ServerDetailView if visible
         if name in self.server_views:
             self.server_views[name].update_status(status)
+            
+        # Update StackDetailViews (they might contain this server)
+        for view in self.stack_views.values():
+            view.update_status()
     
     def on_server_metrics_changed(self, name: str, metrics: dict):
         """Handle server metrics change signal - update both Dashboard and detail view"""
@@ -446,6 +462,10 @@ class MainWindow(QMainWindow):
         # Update ServerDetailView if visible
         if name in self.server_views:
             self.server_views[name].update_status("running")
+            
+        # Update StackDetailViews (they might contain this server)
+        for view in self.stack_views.values():
+            view.update_status()
         
         self.tray_icon.showMessage("Server Started", f"Server '{name}' has been started.")
     
@@ -459,6 +479,10 @@ class MainWindow(QMainWindow):
         if name in self.server_views:
             self.server_views[name].update_status("stopped")
             self.server_views[name].update_metrics({"cpu_percent": 0, "memory_mb": 0})
+            
+        # Update StackDetailViews (they might contain this server)
+        for view in self.stack_views.values():
+            view.update_status()
         
         self.tray_icon.showMessage("Server Stopped", f"Server '{name}' has been stopped.")
     
@@ -618,6 +642,85 @@ class MainWindow(QMainWindow):
             pass
         else:
             QMessageBox.warning(self, "Error", "Failed to restart server.")
+
+    # Stack Handlers
+    
+    def on_sidebar_stack_selected(self, name: str):
+        """Handle sidebar stack selection - switch to stack view"""
+        if name not in self.stack_views:
+            # Create new stack detail view
+            stack_view = StackDetailView(name, self)
+            self.stack_views[name] = stack_view
+            self.stacked_widget.addWidget(stack_view)
+            
+        # Switch to stack view
+        self.stacked_widget.setCurrentWidget(self.stack_views[name])
+        self.current_view = f"stack:{name}"
+        
+    def on_sidebar_stack_context_action(self, action: str, stack_name: str):
+        """Handle context menu actions for stacks"""
+        if action == "start":
+            self.server_manager.start_stack(stack_name)
+        elif action == "stop":
+            self.server_manager.stop_stack(stack_name)
+        elif action == "edit":
+            self.edit_stack(stack_name)
+        elif action == "remove":
+            self.remove_stack(stack_name)
+            
+    def add_stack(self):
+        """Add a new stack"""
+        dialog = StackDialog(self, self.server_manager)
+        if dialog.exec():
+            data = dialog.get_data()
+            if self.server_manager.add_stack(data["name"], data["servers"]):
+                QMessageBox.information(self, "Success", "Stack added successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Stack name already exists.")
+                
+    def edit_stack(self, name: str):
+        """Edit an existing stack"""
+        dialog = StackDialog(self, self.server_manager, stack_name=name)
+        if dialog.exec():
+            data = dialog.get_data()
+            if self.server_manager.update_stack(name, data["servers"]):
+                QMessageBox.information(self, "Success", "Stack updated successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to update stack.")
+                
+    def remove_stack(self, name: str):
+        """Remove a stack"""
+        reply = QMessageBox.question(
+            self, "Confirm Removal",
+            f"Are you sure you want to remove stack '{name}'?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.server_manager.remove_stack(name):
+                # Remove view if exists
+                if name in self.stack_views:
+                    view = self.stack_views[name]
+                    self.stacked_widget.removeWidget(view)
+                    view.deleteLater()
+                    del self.stack_views[name]
+                
+                # If this was the current view, switch to dashboard
+                if self.current_view == f"stack:{name}":
+                    self.sidebar.select_item("dashboard")
+                
+                QMessageBox.information(self, "Success", "Stack removed successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to remove stack.")
+                
+    def on_stack_changed(self):
+        """Handle stack added/removed/updated"""
+        self.sidebar.update_stack_list(self.server_manager.get_stacks())
+        # Update any active stack views
+        for view in self.stack_views.values():
+            view.update_stack_info()
+            
+
 
 
 def main():

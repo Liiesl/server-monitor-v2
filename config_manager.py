@@ -11,8 +11,10 @@ class ConfigManager:
         self.settings_file = settings_file
         self.settings: Dict = {}
         self.servers: Dict[str, Dict] = {}
+        self.stacks: Dict[str, list] = {}
         self.load_settings()
         self.load_config()
+        self.load_stacks()
         
     def load_settings(self):
         """Load application settings from settings.json"""
@@ -147,3 +149,58 @@ class ConfigManager:
         
         self.save_config()
         return True
+
+    # Stack Management
+    
+    def load_stacks(self):
+        """Load stack configurations"""
+        stacks_file = "stacks.json"
+        if os.path.exists(stacks_file):
+            try:
+                with open(stacks_file, 'r') as f:
+                    self.stacks = json.load(f)
+            except Exception as e:
+                print(f"Error loading stacks: {e}")
+                self.stacks = {}
+        else:
+            self.stacks = {}
+
+    def save_stacks(self):
+        """Save stack configurations"""
+        stacks_file = "stacks.json"
+        try:
+            with open(stacks_file, 'w') as f:
+                json.dump(self.stacks, f, indent=2)
+        except Exception as e:
+            print(f"Error saving stacks: {e}")
+
+    def add_stack(self, name: str, server_names: list) -> bool:
+        """Add a new stack configuration"""
+        if name in self.stacks:
+            return False
+        
+        self.stacks[name] = server_names
+        self.save_stacks()
+        return True
+
+    def remove_stack(self, name: str) -> bool:
+        """Remove a stack configuration"""
+        if name in self.stacks:
+            del self.stacks[name]
+            self.save_stacks()
+            return True
+        return False
+
+    def update_stack(self, name: str, server_names: list) -> bool:
+        """Update stack configuration"""
+        if name not in self.stacks:
+            return False
+        
+        self.stacks[name] = server_names
+        self.save_stacks()
+        return True
+    
+    def get_stacks(self) -> Dict:
+        """Get all stacks"""
+        return self.stacks
+

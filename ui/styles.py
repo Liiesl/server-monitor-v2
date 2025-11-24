@@ -224,3 +224,37 @@ def get_label_style(size: str = "normal", color: str = "primary") -> str:
     
     return f"font-size: {font_size}; color: {text_color}; font-weight: {weight};"
 
+
+def get_input_style() -> str:
+    """Get stylesheet for input fields"""
+    return f"""
+        background-color: {COLOR_BACKGROUND_MEDIUM};
+        color: {COLOR_TEXT_SECONDARY};
+        border: 1px solid {COLOR_BORDER};
+        border-radius: {RADIUS_TINY}px;
+        padding: 6px;
+        font-size: {FONT_SIZE_SMALL}px;
+    """
+
+
+def get_danger_button_style() -> str:
+    """Get stylesheet for danger action buttons"""
+    return f"""
+        QPushButton {{
+            background-color: {COLOR_ERROR};
+            color: white;
+            font-weight: bold;
+            padding: 12px 24px;
+            border-radius: {RADIUS_MEDIUM}px;
+            font-size: {FONT_SIZE_NORMAL}px;
+            border: none;
+        }}
+        QPushButton:hover {{
+            background-color: {COLOR_ERROR_HOVER};
+        }}
+        QPushButton:pressed {{
+            background-color: {COLOR_ERROR_PRESSED};
+        }}
+    """
+
+
