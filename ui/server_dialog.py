@@ -64,7 +64,6 @@ class ServerDialog(QDialog):
         layout.addRow("Server Path:", path_widget)
         
         # Command input (unified - changes based on server type)
-        from PySide6.QtWidgets import QLabel
         self.command_label = QLabel("Command:")
         self.command_input = QLineEdit()
         self.command_input.setText("node")
@@ -72,7 +71,6 @@ class ServerDialog(QDialog):
         layout.addRow(self.command_label, self.command_input)
         
         # Virtual environment path (for Flask only) with browse button
-        from PySide6.QtWidgets import QLabel
         self.venv_label = QLabel("Virtual Environment (optional):")
         venv_widget = QWidget()
         venv_layout = QHBoxLayout()
