@@ -1,20 +1,14 @@
 """
 Server Manager - Handles Node.js and Flask server process management
+Refactored to use ConfigManager and ServerInstance
 """
-import subprocess
-import os
-import json
-from pathlib import Path
-from typing import Dict, Optional, List, Tuple
-from datetime import datetime
-import psutil
 import time
-import re
+from typing import Dict, Optional, List, Tuple
 from PySide6.QtCore import QObject, Signal
-from ui.log_reader import LogReaderThread
+from config_manager import ConfigManager
+from server_instance import ServerInstance
 from log_persistence import LogPersistence
 from metrics_persistence import MetricsPersistence
-
 
 class ServerManager(QObject):
     """Manages Node.js and Flask server processes"""
@@ -29,717 +23,225 @@ class ServerManager(QObject):
     
     def __init__(self, config_file: str = "servers.json", settings_file: str = "settings.json"):
         super().__init__()
-        self.config_file = config_file
-        self.settings_file = settings_file
-        self.settings: Dict = {}  # Application settings (python_command, etc.)
-        self.servers: Dict[str, Dict] = {}
-        self.processes: Dict[str, subprocess.Popen] = {}
-        self.psutil_processes: Dict[str, psutil.Process] = {}
-        self.last_metrics: Dict[str, dict] = {}
-        self.cpu_history: Dict[str, list] = {}  # Moving average for CPU smoothing
-        self.metrics_history: Dict[str, List[Tuple[float, float, float]]] = {}  # (timestamp, cpu, ram) for graphs
-        self.log_readers: Dict[str, LogReaderThread] = {}  # Log reader threads
-        self.log_persistence = LogPersistence()  # Log persistence handler
-        self.metrics_persistence = MetricsPersistence()  # Metrics persistence handler
-        self.last_cleanup_time: Dict[str, float] = {}  # Track last cleanup time per server
-        self.detected_ports: Dict[str, Optional[int]] = {}  # Detected ports for each server
-        self.load_settings()
-        self.load_config()
+        self.config_manager = ConfigManager(config_file, settings_file)
+        self.instances: Dict[str, ServerInstance] = {}
+        
+        self.log_persistence = LogPersistence()
+        self.metrics_persistence = MetricsPersistence()
+        self.metrics_history: Dict[str, List[Tuple[float, float, float]]] = {}
+        self.last_cleanup_time: Dict[str, float] = {}
+        
+        # Expose properties for backward compatibility/UI access
+        self.settings = self.config_manager.settings
+        self.servers = self.config_manager.servers
+        self.psutil_processes = {} # Shim for UI access if needed, but better to remove dependency
+        self.detected_ports = {} # Shim
+        
         # Cleanup old data on startup
         self.metrics_persistence.cleanup_all_old_data()
     
-    def load_settings(self):
-        """Load application settings from settings.json, creating it with defaults if not available"""
-        if os.path.exists(self.settings_file):
-            try:
-                with open(self.settings_file, 'r') as f:
-                    self.settings = json.load(f)
-            except Exception as e:
-                print(f"Error loading settings: {e}")
-                self.settings = {}
-        else:
-            # File doesn't exist, create it with default values
-            self.settings = {}
-        
-        # Set defaults if not present
-        defaults = {
-            "python_command": "python",
-            "node_command": "node",
-            "flask_command": "flask",
-            "tray_shortcut": "Ctrl+Alt+S"
-        }
-        
-        settings_changed = False
-        for key, default_value in defaults.items():
-            if key not in self.settings:
-                self.settings[key] = default_value
-                settings_changed = True
-        
-        # If file didn't exist or we added missing defaults, save it
-        if not os.path.exists(self.settings_file) or settings_changed:
-            self.save_settings()
-    
     def save_settings(self):
-        """Save application settings to settings.json"""
-        try:
-            with open(self.settings_file, 'w') as f:
-                json.dump(self.settings, f, indent=2)
-        except Exception as e:
-            print(f"Error saving settings: {e}")
-    
-    def load_config(self):
-        """Load server configurations from file"""
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f:
-                    self.servers = json.load(f)
-            except Exception as e:
-                print(f"Error loading config: {e}")
-                self.servers = {}
-        else:
-            self.servers = {}
+        self.config_manager.save_settings()
         
-        # Ensure backward compatibility: set defaults for existing servers
-        default_python_cmd = self.settings.get("python_command", "python")
-        for name, config in self.servers.items():
-            # Set default server_type if not present (backward compatibility)
-            if "server_type" not in config:
-                config["server_type"] = "nodejs"
-            # Set default python_command if not present (for Flask servers)
-            if "python_command" not in config:
-                config["python_command"] = default_python_cmd
-    
-    def save_config(self):
-        """Save server configurations to file"""
-        try:
-            with open(self.config_file, 'w') as f:
-                json.dump(self.servers, f, indent=2)
-        except Exception as e:
-            print(f"Error saving config: {e}")
-    
-    def add_server(self, name: str, path: str, command: str = "node", args: str = "", port: Optional[int] = None,
-                  server_type: str = "nodejs", python_command: Optional[str] = None, venv_path: Optional[str] = None,
-                  flaresolverr_type: Optional[str] = None):
-        """Add a new server configuration
-        
-        Args:
-            name: Server name
-            path: Server path (file or directory)
-            command: Command to run (for Node.js: node, npm, yarn, etc.)
-            args: Additional arguments
-            port: Optional port number
-            server_type: Server type ("nodejs" or "flask"), defaults to "nodejs"
-            python_command: Python command for Flask servers (py, python, python3), 
-                          defaults to settings value
-            venv_path: Virtual environment path for Flask servers (optional)
-            flaresolverr_type: Type of FlareSolverr installation ("source" or "binary")
-        """
-        if name in self.servers:
-            return False
-        
-        # Default python_command to settings value if not provided
-        if python_command is None:
-            python_command = self.settings.get("python_command", "python")
-        
-        server_config = {
-            "path": path,
-            "command": command,
-            "args": args,
-            "port": port,
-            "server_type": server_type,
-            "python_command": python_command,
-            "status": "stopped",
-            "created_at": datetime.now().isoformat()
-        }
-        
-        # Add venv_path if provided (for Flask servers)
-        if venv_path:
-            server_config["venv_path"] = venv_path
+    def load_settings(self):
+        self.config_manager.load_settings()
+        # Update reference
+        self.settings = self.config_manager.settings
+
+    @property
+    def last_metrics(self):
+        """Aggregate last metrics from all instances"""
+        metrics = {}
+        for name, instance in self.instances.items():
+            if instance.last_metrics:
+                metrics[name] = instance.last_metrics
+        return metrics
+
+    def record_server_metrics(self, name: str):
+        """Record metrics for a specific server (called by MetricsMonitor)"""
+        if name not in self.instances:
+            return
             
-        # Add flaresolverr_type if provided
-        if flaresolverr_type:
-            server_config["flaresolverr_type"] = flaresolverr_type
+        instance = self.instances[name]
+        raw_metrics = instance.get_metrics()
         
-        self.servers[name] = server_config
-        self.save_config()
-        return True
+        if raw_metrics:
+            cpu, ram = raw_metrics
+            self._record_metrics(name, cpu, ram)
+    
+    def add_server(self, *args, **kwargs):
+        return self.config_manager.add_server(*args, **kwargs)
     
     def remove_server(self, name: str):
-        """Remove a server configuration"""
-        if name in self.servers:
-            if name in self.processes:
-                self.stop_server(name)
-            del self.servers[name]
-            # Delete log file when server is removed
+        if name in self.instances:
+            self.stop_server(name)
+        
+        if self.config_manager.remove_server(name):
             self.log_persistence.delete_logs(name)
-            # Delete metrics when server is removed
             self.metrics_persistence.delete_metrics(name)
-            self.save_config()
             return True
         return False
     
-    def update_server(self, name: str, path: str = None, command: str = None, args: str = None, port: int = None,
-                      server_type: str = None, python_command: str = None, venv_path: str = None,
-                      flaresolverr_type: str = None):
-        """Update server configuration
-        
-        Args:
-            name: Server name
-            path: Server path (file or directory)
-            command: Command to run (for Node.js: node, npm, yarn, etc.)
-            args: Additional arguments
-            port: Optional port number
-            server_type: Server type ("nodejs" or "flask")
-            python_command: Python command for Flask servers (py, python, python3)
-            venv_path: Virtual environment path for Flask servers (use empty string to remove)
-            flaresolverr_type: Type of FlareSolverr installation ("source" or "binary")
-        """
-        if name not in self.servers:
-            return False
-        
-        if path is not None:
-            self.servers[name]["path"] = path
-        if command is not None:
-            self.servers[name]["command"] = command
-        if args is not None:
-            self.servers[name]["args"] = args
-        if port is not None:
-            self.servers[name]["port"] = port
-        if server_type is not None:
-            self.servers[name]["server_type"] = server_type
-        if python_command is not None:
-            self.servers[name]["python_command"] = python_command
-        if venv_path is not None:
-            if venv_path:
-                self.servers[name]["venv_path"] = venv_path
-            else:
-                # Remove venv_path if empty string provided
-                self.servers[name].pop("venv_path", None)
-        if flaresolverr_type is not None:
-            self.servers[name]["flaresolverr_type"] = flaresolverr_type
-        
-        self.save_config()
-        return True
+    def update_server(self, *args, **kwargs):
+        return self.config_manager.update_server(*args, **kwargs)
     
     def start_server(self, name: str) -> bool:
-        """Start a server (Node.js or Flask)"""
         if name not in self.servers:
             return False
         
-        if name in self.processes:
-            # Server already running
-            return False
+        if name in self.instances:
+            if self.instances[name].process:
+                return False # Already running
         
-        server_config = self.servers[name]
-        server_path = server_config["path"]
+        instance = ServerInstance(name, self.servers[name], self.settings)
         
-        if not os.path.exists(server_path):
-            return False
+        # Connect signals
+        instance.status_changed.connect(lambda s: self._on_status_changed(name, s))
+        instance.log_received.connect(lambda l, e: self._on_log_received(name, l, e))
+        instance.port_detected.connect(lambda p: self._on_port_detected(name, p))
         
-        try:
-            # Get server type (default to "nodejs" for backward compatibility)
-            server_type = server_config.get("server_type", "nodejs")
+        if instance.start():
+            self.instances[name] = instance
+            # Shim for psutil_processes
+            if instance.psutil_process:
+                self.psutil_processes[name] = instance.psutil_process
             
-            # Build command based on server type
-            if server_type == "flask":
-                # Flask: [python_command] [path] [args]
-                # Check if venv is specified and use Python from venv
-                venv_path = server_config.get("venv_path")
-                if venv_path:
-                    # Resolve venv path (can be relative or absolute)
-                    server_dir = os.path.dirname(server_path) if os.path.isfile(server_path) else server_path
-                    if not os.path.isabs(venv_path):
-                        # Relative path - resolve relative to server directory
-                        venv_path = os.path.join(server_dir, venv_path)
-                    
-                    # Determine Python executable path based on OS
-                    if os.name == 'nt':  # Windows
-                        python_exe = os.path.join(venv_path, "Scripts", "python.exe")
-                        if not os.path.exists(python_exe):
-                            # Fallback to python.exe in venv root
-                            python_exe = os.path.join(venv_path, "python.exe")
-                    else:  # Unix/Linux/Mac
-                        python_exe = os.path.join(venv_path, "bin", "python")
-                    
-                    # Use venv Python if it exists, otherwise fall back to configured command
-                    if os.path.exists(python_exe):
-                        python_cmd = python_exe
-                    else:
-                        # Venv Python not found, use configured command
-                        python_cmd = server_config.get("python_command") or self.settings.get("python_command", "python")
-                else:
-                    # No venv, use configured Python command
-                    python_cmd = server_config.get("python_command") or self.settings.get("python_command", "python")
-                
-                cmd = [python_cmd]
-                cmd.append(server_path)
-                if server_config.get("args"):
-                    cmd.extend(server_config["args"].split())
-            elif server_type == "flaresolverr":
-                # FlareSolverr
-                flaresolverr_type = server_config.get("flaresolverr_type", "source")
-                
-                if flaresolverr_type == "source":
-                    # Run from source: [python_command] src/flaresolverr.py
-                    # Path is the git clone directory
-                    python_cmd = server_config.get("python_command") or self.settings.get("python_command", "python")
-                    script_path = os.path.join(server_path, "src", "flaresolverr.py")
-                    
-                    if not os.path.exists(script_path):
-                        print(f"FlareSolverr script not found at {script_path}")
-                        return False
-                        
-                    cmd = [python_cmd, script_path]
-                else:
-                    # Run from binary: [path]
-                    # Path is the executable
-                    cmd = [server_path]
-                
-                if server_config.get("args"):
-                    cmd.extend(server_config["args"].split())
-            else:
-                # Node.js: [command] [args] [path]
-                cmd = [server_config.get("command", "node")]
-                if server_config.get("args"):
-                    cmd.extend(server_config["args"].split())
-                cmd.append(server_path)
-            
-            # Start process
-            process = subprocess.Popen(
-                cmd,
-                cwd=os.path.dirname(server_path) if os.path.isfile(server_path) else server_path,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            )
-            
-            self.processes[name] = process
-            # Wrap with psutil for metrics
-            try:
-                psutil_proc = psutil.Process(process.pid)
-                self.psutil_processes[name] = psutil_proc
-                # Initialize CPU percent (required for first call)
-                psutil_proc.cpu_percent(interval=None)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-            
-            # Start log reader thread
-            log_reader = LogReaderThread(name, process, self)
-            log_reader.start()
-            self.log_readers[name] = log_reader
-            
-            self.servers[name]["status"] = "running"
-            self.servers[name]["started_at"] = datetime.now().isoformat()
-            self.save_config()
-            
-            # Initialize detected port
-            self.detected_ports[name] = None
-            
-            # Try to detect port immediately and periodically
-            self.detect_port(name)
-            
-            # Emit signals
             self.server_started.emit(name)
-            self.server_status_changed.emit(name, "running")
-            
             return True
-        except Exception as e:
-            print(f"Error starting server {name}: {e}")
-            return False
+        return False
     
     def stop_server(self, name: str) -> bool:
-        """Stop a Node.js server"""
-        if name not in self.processes:
-            return False
-        
-        try:
-            process = self.processes[name]
-            process.terminate()
-            
-            # Wait for process to terminate
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            
-            del self.processes[name]
-            
-            # Stop and clean up log reader thread
-            log_reader = self.log_readers.pop(name, None)
-            if log_reader:
-                log_reader.stop()
-            
-            # Clean up psutil tracking
-            if name in self.psutil_processes:
-                del self.psutil_processes[name]
-            if name in self.last_metrics:
-                del self.last_metrics[name]
-            if name in self.cpu_history:
-                del self.cpu_history[name]
-            if name in self.metrics_history:
-                del self.metrics_history[name]
-            if name in self.detected_ports:
-                del self.detected_ports[name]
-            
-            self.servers[name]["status"] = "stopped"
-            if "started_at" in self.servers[name]:
-                del self.servers[name]["started_at"]
-            self.save_config()
-            
-            # Emit signals
-            self.server_stopped.emit(name)
-            self.server_status_changed.emit(name, "stopped")
-            
-            return True
-        except Exception as e:
-            print(f"Error stopping server {name}: {e}")
-            return False
+        if name in self.instances:
+            instance = self.instances[name]
+            if instance.stop():
+                del self.instances[name]
+                if name in self.psutil_processes:
+                    del self.psutil_processes[name]
+                self.server_stopped.emit(name)
+                return True
+        return False
     
     def restart_server(self, name: str) -> bool:
-        """Restart a Node.js server"""
-        if name in self.processes:
-            self.stop_server(name)
+        self.stop_server(name)
         return self.start_server(name)
     
     def get_server_status(self, name: str) -> str:
-        """Get the status of a server"""
-        if name not in self.servers:
-            return "not_found"
-        
-        if name in self.processes:
-            process = self.processes[name]
-            if process.poll() is None:
-                status = "running"
-            else:
-                # Process has ended
-                del self.processes[name]
-                # Stop and clean up log reader thread
-                log_reader = self.log_readers.pop(name, None)
-                if log_reader:
-                    log_reader.stop()
-                # Clean up psutil tracking
-                if name in self.psutil_processes:
-                    del self.psutil_processes[name]
-                if name in self.last_metrics:
-                    del self.last_metrics[name]
-                if name in self.cpu_history:
-                    del self.cpu_history[name]
-                if name in self.metrics_history:
-                    del self.metrics_history[name]
-                self.servers[name]["status"] = "stopped"
-                status = "stopped"
-        else:
-            status = self.servers[name].get("status", "stopped")
-        
-        # Emit signal if status changed
-        if self.servers[name].get("status") != status:
-            self.servers[name]["status"] = status
-            self.server_status_changed.emit(name, status)
-        
-        return status
+        if name in self.instances:
+            # Check if process is still alive
+            instance = self.instances[name]
+            if instance.process and instance.process.poll() is not None:
+                # Died
+                self.stop_server(name)
+                return "stopped"
+            return "running"
+        return self.servers.get(name, {}).get("status", "stopped")
     
-    def _get_raw_metrics(self, name: str) -> Optional[Tuple[float, float]]:
-        """Get raw CPU and RAM metrics for a server. Returns (cpu_percent, memory_mb) or None"""
-        if name not in self.psutil_processes:
+    def get_server_metrics(self, name: str) -> Optional[Dict]:
+        if name not in self.instances:
             return None
+            
+        instance = self.instances[name]
+        raw_metrics = instance.get_metrics()
         
-        try:
-            proc = self.psutil_processes[name]
+        if raw_metrics:
+            cpu, ram = raw_metrics
+            # Record metrics logic (simplified from original)
+            self._record_metrics(name, cpu, ram)
             
-            # Check if process is still running
-            if not proc.is_running():
-                # Process died, clean up
-                if name in self.processes:
-                    del self.processes[name]
-                # Stop and clean up log reader thread
-                log_reader = self.log_readers.pop(name, None)
-                if log_reader:
-                    log_reader.stop()
-                del self.psutil_processes[name]
-                if name in self.last_metrics:
-                    del self.last_metrics[name]
-                if name in self.cpu_history:
-                    del self.cpu_history[name]
-                if name in self.metrics_history:
-                    del self.metrics_history[name]
-                self.servers[name]["status"] = "stopped"
-                self.server_status_changed.emit(name, "stopped")
-                return None
-            
-            # Get CPU percent (non-blocking)
-            raw_cpu = proc.cpu_percent(interval=None)
-            
-            # Smooth CPU using moving average (keep last 5 values)
-            if name not in self.cpu_history:
-                self.cpu_history[name] = []
-            
-            cpu_history = self.cpu_history[name]
-            cpu_history.append(raw_cpu)
-            if len(cpu_history) > 5:
-                cpu_history.pop(0)  # Keep only last 5 values
-            
-            # Calculate smoothed CPU (average of last 5 values)
-            smoothed_cpu = sum(cpu_history) / len(cpu_history)
-            
-            # Get memory in MB
-            memory_info = proc.memory_info()
-            memory_mb = memory_info.rss / (1024 * 1024)
-            
-            return (smoothed_cpu, memory_mb)
-            
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            # Process died or access denied, clean up
-            if name in self.processes:
-                del self.processes[name]
-            # Stop and clean up log reader thread
-            log_reader = self.log_readers.pop(name, None)
-            if log_reader:
-                log_reader.stop()
-            if name in self.psutil_processes:
-                del self.psutil_processes[name]
-            if name in self.last_metrics:
-                del self.last_metrics[name]
-            if name in self.cpu_history:
-                del self.cpu_history[name]
-            if name in self.metrics_history:
-                del self.metrics_history[name]
-            self.servers[name]["status"] = "stopped"
-            self.server_status_changed.emit(name, "stopped")
-            return None
-    
-    def record_server_metrics(self, name: str):
-        """Record server metrics to history every second, regardless of change"""
-        raw_metrics = self._get_raw_metrics(name)
-        if raw_metrics is None:
-            return
+            # Check if changed significantly (logic from original)
+            last = instance.last_metrics
+            if (not last or 
+                abs(cpu - last.get("cpu_percent", 0)) >= 0.1 or 
+                abs(ram - last.get("memory_mb", 0)) >= 1.0):
+                
+                metrics = {"cpu_percent": cpu, "memory_mb": ram}
+                instance.last_metrics = metrics
+                self.server_metrics_changed.emit(name, metrics)
+                return metrics
         
-        smoothed_cpu, memory_mb = raw_metrics
+        return None
+
+    def _record_metrics(self, name, cpu, ram):
         current_time = time.time()
+        self.metrics_persistence.append_metric(name, current_time, cpu, ram)
         
-        # Save to persistent storage
-        self.metrics_persistence.append_metric(name, current_time, smoothed_cpu, memory_mb)
-        
-        # Always store in history for graphs (keep last 1 hour = 3600 seconds in memory for performance)
         if name not in self.metrics_history:
             self.metrics_history[name] = []
         
-        self.metrics_history[name].append((current_time, smoothed_cpu, memory_mb))
+        self.metrics_history[name].append((current_time, cpu, ram))
         
-        # Keep only last 1 hour of data in memory (3600 seconds)
-        cutoff_time = current_time - 3600
-        self.metrics_history[name] = [
-            (ts, cpu, ram) for ts, cpu, ram in self.metrics_history[name]
-            if ts >= cutoff_time
-        ]
+        # Prune memory history (1 hour)
+        cutoff = current_time - 3600
+        self.metrics_history[name] = [x for x in self.metrics_history[name] if x[0] >= cutoff]
         
-        # Periodic cleanup of old data (every 5 minutes = 300 seconds)
+        # Cleanup persistence (every 5 mins)
         if name not in self.last_cleanup_time or (current_time - self.last_cleanup_time[name]) >= 300:
             self.metrics_persistence.cleanup_old_data(name)
             self.last_cleanup_time[name] = current_time
-    
-    def get_server_metrics(self, name: str) -> Optional[Dict]:
-        """Get server metrics (CPU, RAM) - only returns if values changed (event-driven)"""
-        raw_metrics = self._get_raw_metrics(name)
-        if raw_metrics is None:
-            return None
-        
-        smoothed_cpu, memory_mb = raw_metrics
-        
-        # Get cached values for comparison
-        last_metrics = self.last_metrics.get(name, {})
-        last_cpu = last_metrics.get("cpu_percent")
-        last_memory = last_metrics.get("memory_mb")
-        
-        # Only update if change is significant (0.1% for CPU, 1MB for memory)
-        cpu_changed = last_cpu is None or abs(smoothed_cpu - last_cpu) >= 0.1
-        memory_changed = last_memory is None or abs(memory_mb - last_memory) >= 1.0
-        
-        # Only return metrics if values changed significantly (event-driven!)
-        if cpu_changed or memory_changed:
-            metrics = {
-                "cpu_percent": smoothed_cpu,
-                "memory_mb": memory_mb
-            }
-            # Cache the new values
-            self.last_metrics[name] = metrics
-            return metrics
-        
-        return None  # No change, don't update
-    
+
     def get_all_servers(self) -> Dict:
-        """Get all server configurations"""
-        # Update status for all servers
-        for name in list(self.servers.keys()):
+        # Update status check
+        for name in list(self.instances.keys()):
             self.get_server_status(name)
         return self.servers
-    
+        
     def stop_all_servers(self):
-        """Stop all running servers"""
-        for name in list(self.processes.keys()):
+        for name in list(self.instances.keys()):
             self.stop_server(name)
-        
-        # Ensure all log readers are stopped
-        for name in list(self.log_readers.keys()):
-            log_reader = self.log_readers.pop(name, None)
-            if log_reader:
-                log_reader.stop()
-    
-    def save_log(self, server_name: str, log_line: str):
-        """Save a log line to persistent storage"""
-        self.log_persistence.append_log(server_name, log_line)
-    
-    def load_logs(self, server_name: str, max_lines: Optional[int] = None) -> list:
-        """Load logs from persistent storage"""
-        return self.log_persistence.load_logs(server_name, max_lines)
-    
-    def clear_logs(self, server_name: str):
-        """Clear logs for a server"""
-        self.log_persistence.clear_logs(server_name)
-    
-    def get_metrics_history(self, server_name: Optional[str] = None, 
-                           time_range_seconds: Optional[float] = None) -> Dict[str, List[Tuple[float, float, float]]]:
-        """
-        Get metrics history for graph display
-        
-        Args:
-            server_name: If provided, return history for that server only.
-                        If None, return history for all servers.
-            time_range_seconds: Optional time range in seconds. If provided, only return
-                               data within this range from current time.
-        
-        Returns:
-            Dict mapping server names to list of (timestamp, cpu_percent, memory_mb) tuples
-        """
-        current_time = time.time()
-        start_time = None
-        if time_range_seconds is not None:
-            start_time = current_time - time_range_seconds
-        
-        if server_name:
-            # Get in-memory data
-            in_memory_data = self.metrics_history.get(server_name, [])
-            
-            # If time range exceeds in-memory window (1 hour), load from persistence
-            if time_range_seconds is None or time_range_seconds > 3600:
-                persisted_data = self.metrics_persistence.load_metrics(server_name, start_time=start_time)
-                
-                # Merge in-memory and persisted data, removing duplicates
-                all_data = {}
-                for ts, cpu, ram in persisted_data:
-                    all_data[ts] = (ts, cpu, ram)
-                for ts, cpu, ram in in_memory_data:
-                    all_data[ts] = (ts, cpu, ram)
-                
-                # Sort by timestamp
-                result = sorted(all_data.values())
-            else:
-                # Only use in-memory data for short time ranges
-                if start_time is not None:
-                    result = [(ts, cpu, ram) for ts, cpu, ram in in_memory_data if ts >= start_time]
-                else:
-                    result = in_memory_data
-            
-            return {server_name: result}
-        
-        # Return data for all servers
-        result = {}
-        server_names = list(self.servers.keys())
-        for name in server_names:
-            # Get in-memory data
-            in_memory_data = self.metrics_history.get(name, [])
-            
-            # If time range exceeds in-memory window (1 hour), load from persistence
-            if time_range_seconds is None or time_range_seconds > 3600:
-                persisted_data = self.metrics_persistence.load_metrics(name, start_time=start_time)
-                
-                # Merge in-memory and persisted data, removing duplicates
-                all_data = {}
-                for ts, cpu, ram in persisted_data:
-                    all_data[ts] = (ts, cpu, ram)
-                for ts, cpu, ram in in_memory_data:
-                    all_data[ts] = (ts, cpu, ram)
-                
-                # Sort by timestamp
-                result[name] = sorted(all_data.values())
-            else:
-                # Only use in-memory data for short time ranges
-                if start_time is not None:
-                    result[name] = [(ts, cpu, ram) for ts, cpu, ram in in_memory_data if ts >= start_time]
-                else:
-                    result[name] = in_memory_data
-        
-        return result
-    
-    def detect_port(self, name: str) -> Optional[int]:
-        """
-        Detect the port a server is listening on.
-        Uses multiple methods:
-        1. Check configured port in server config
-        2. Use psutil to check process connections
-        3. Parse recent logs for port patterns
-        
-        Returns the detected port or None if not found.
-        """
-        if name not in self.servers:
-            return None
-        
-        # Method 1: Check configured port
-        configured_port = self.servers[name].get("port")
-        if configured_port:
-            if self.detected_ports.get(name) != configured_port:
-                self.detected_ports[name] = configured_port
-                self.port_detected.emit(name, configured_port)
-            return configured_port
-        
-        # Method 2: Use psutil to check process connections
-        if name in self.psutil_processes:
-            try:
-                proc = self.psutil_processes[name]
-                if proc.is_running():
-                    connections = proc.connections(kind='inet')
-                    for conn in connections:
-                        if conn.status == psutil.CONN_LISTEN:
-                            port = conn.laddr.port
-                            # Only consider ports in common web server range (1024-65535)
-                            # Exclude system ports (< 1024) unless explicitly configured
-                            if port >= 1024:
-                                if self.detected_ports.get(name) != port:
-                                    self.detected_ports[name] = port
-                                    self.port_detected.emit(name, port)
-                                return port
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-        
-        # Method 3: Parse recent logs for port patterns
-        # Common patterns: "listening on port 3000", "Server running on http://localhost:3000", etc.
-        port_patterns = [
-            r'(?:listening|running|started|bound).*?(?:on|at).*?port\s+(\d+)',
-            r'(?:listening|running|started|bound).*?port\s+(\d+)',
-            r'http://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)',
-            r'https://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)',
-            r'(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d+)(?:\s|$|/|\?|,)',  # Pattern like "localhost:3000"
-        ]
-        
-        # Load recent logs (last 100 lines)
-        recent_logs = self.load_logs(name, max_lines=100)
-        for log_line in reversed(recent_logs):  # Check most recent first
-            for pattern in port_patterns:
-                match = re.search(pattern, log_line, re.IGNORECASE)
-                if match:
-                    try:
-                        port = int(match.group(1))
-                        # Validate port range
-                        if 1024 <= port <= 65535:
-                            if self.detected_ports.get(name) != port:
-                                self.detected_ports[name] = port
-                                self.port_detected.emit(name, port)
-                            return port
-                    except (ValueError, IndexError):
-                        continue
-        
-        return self.detected_ports.get(name)
-    
-    def get_detected_port(self, name: str) -> Optional[int]:
-        """Get the detected port for a server"""
-        return self.detected_ports.get(name)
 
+    def save_log(self, server_name: str, log_line: str):
+        self.log_persistence.append_log(server_name, log_line)
+        
+    def load_logs(self, server_name: str, max_lines: Optional[int] = None) -> list:
+        return self.log_persistence.load_logs(server_name, max_lines)
+        
+    def clear_logs(self, server_name: str):
+        self.log_persistence.clear_logs(server_name)
+
+    def get_metrics_history(self, server_name: Optional[str] = None, time_range_seconds: Optional[float] = None):
+        # Re-implement logic using self.metrics_history and persistence
+        # This is largely same as before, just using self.metrics_history which we populate in _record_metrics
+        current_time = time.time()
+        start_time = current_time - time_range_seconds if time_range_seconds else None
+        
+        result = {}
+        names = [server_name] if server_name else list(self.servers.keys())
+        
+        for name in names:
+            in_memory = self.metrics_history.get(name, [])
+            
+            if time_range_seconds is None or time_range_seconds > 3600:
+                persisted = self.metrics_persistence.load_metrics(name, start_time=start_time)
+                # Merge
+                data_map = {ts: (ts, c, r) for ts, c, r in persisted}
+                for item in in_memory:
+                    data_map[item[0]] = item
+                
+                result[name] = sorted(data_map.values())
+            else:
+                if start_time:
+                    result[name] = [x for x in in_memory if x[0] >= start_time]
+                else:
+                    result[name] = in_memory
+                    
+        return result if not server_name else {server_name: result.get(server_name, [])}
+
+    def get_detected_port(self, name: str) -> Optional[int]:
+        return self.detected_ports.get(name)
+        
+    def detect_port(self, name: str):
+        if name in self.instances:
+            self.instances[name].detect_port()
+
+    # Signal handlers
+    def _on_status_changed(self, name, status):
+        self.servers[name]["status"] = status
+        self.config_manager.save_config()
+        self.server_status_changed.emit(name, status)
+        
+    def _on_log_received(self, name, line, is_error):
+        self.server_log.emit(name, line, is_error)
+        
+    def _on_port_detected(self, name, port):
+        self.detected_ports[name] = port
+        self.port_detected.emit(name, port)

@@ -4,8 +4,8 @@ A modern PySide6 application for managing and monitoring Node.js servers with re
 
 ## Features
 
-- **Server Management**: Add, edit, and remove Node.js server configurations
-- **Process Control**: Start, stop, and restart Node.js servers with a single click
+- **Server Management**: Add, edit, and remove Node.js and Flask servers, as well as FlareSolverr instances
+- **Process Control**: Start, stop, and restart servers with a single click
 - **Real-time Monitoring**: Track CPU usage and RAM consumption in real-time
 - **Performance Graphs**: Visualize server performance metrics over time with interactive charts
 - **Log Viewer**: View server logs with syntax highlighting and error detection
@@ -112,6 +112,17 @@ python main.py
 - **Command**: `yarn`
 - **Arguments**: `start`
 - **Port**: `3000`
+
+### FlareSolverr (Source)
+- **Server Type**: `FlareSolverr`
+- **FlareSolverr Type**: `Source`
+- **Path**: `C:\projects\flaresolverr` (Git clone directory)
+- **Python Command**: `python` (or `python3`)
+
+### FlareSolverr (Binary)
+- **Server Type**: `FlareSolverr`
+- **FlareSolverr Type**: `Binary`
+- **Path**: `C:\tools\flaresolverr.exe` (Path to executable)
 
 ## Project Structure
 
