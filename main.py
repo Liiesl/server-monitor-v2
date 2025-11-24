@@ -502,7 +502,8 @@ class MainWindow(QMainWindow):
                 data["args"], data["port"],
                 data.get("server_type", "nodejs"),
                 data.get("python_command"),
-                data.get("venv_path")
+                data.get("venv_path"),
+                data.get("flaresolverr_type")
             ):
                 self.update_dashboard()
                 self.sidebar.update_server_list(self.server_manager.get_all_servers())
@@ -533,7 +534,8 @@ class MainWindow(QMainWindow):
                 name, data["path"], data["command"], 
                 data["args"], data["port"],
                 data.get("server_type"), data.get("python_command"),
-                venv_path
+                venv_path,
+                data.get("flaresolverr_type")
             ):
                 self.update_dashboard()
                 # Update detail view if visible
