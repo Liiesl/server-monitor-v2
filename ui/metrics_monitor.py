@@ -18,6 +18,7 @@ class MetricsMonitor(QThread):
         """Main monitoring loop"""
         self.running = True
         last_record_time = {}  # Track when we last recorded metrics for each server
+        last_port_check_time = {}  # Track when we last checked ports for each server
         
         while self.running:
             current_time = time.time()
@@ -37,6 +38,11 @@ class MetricsMonitor(QThread):
                 if metrics:
                     # Emit signal via server_manager
                     self.server_manager.server_metrics_changed.emit(name, metrics)
+                
+                # Check for port detection every 2 seconds (less frequent than metrics)
+                if name not in last_port_check_time or (current_time - last_port_check_time[name]) >= 2.0:
+                    self.server_manager.detect_port(name)
+                    last_port_check_time[name] = current_time
             
             # Sleep 200ms between checks
             time.sleep(0.2)

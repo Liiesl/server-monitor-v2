@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         self.server_manager.server_started.connect(self.on_server_started)
         self.server_manager.server_stopped.connect(self.on_server_stopped)
         self.server_manager.server_log.connect(self.on_server_log)
+        self.server_manager.port_detected.connect(self.on_port_detected)
         
         # Create and start metrics monitoring thread
         self.metrics_monitor = MetricsMonitor(self.server_manager)
@@ -382,6 +383,11 @@ class MainWindow(QMainWindow):
                             server_view.update_metrics({"cpu_percent": 0, "memory_mb": 0})
                     else:
                         server_view.update_metrics({"cpu_percent": 0, "memory_mb": 0})
+                    
+                    # Check for detected port
+                    detected_port = self.server_manager.get_detected_port(name)
+                    if detected_port:
+                        server_view.update_detected_port(detected_port)
             
             # Switch to server view
             self.stacked_widget.setCurrentWidget(self.server_views[name])
@@ -463,6 +469,15 @@ class MainWindow(QMainWindow):
         # Forward to ServerDetailView if visible
         if name in self.server_views:
             self.server_views[name].append_log(log_line, is_error)
+        # Try to detect port from new log (non-blocking, quick check)
+        # Only check if we don't already have a detected port
+        if name not in self.server_manager.detected_ports or self.server_manager.detected_ports[name] is None:
+            self.server_manager.detect_port(name)
+    
+    def on_port_detected(self, name: str, port: int):
+        """Handle port detection signal - update ServerDetailView if visible"""
+        if name in self.server_views:
+            self.server_views[name].update_detected_port(port)
     
     def get_selected_server(self):
         """Get the name of the selected server from current view"""

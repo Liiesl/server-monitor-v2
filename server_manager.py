@@ -9,6 +9,7 @@ from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 import psutil
 import time
+import re
 from PySide6.QtCore import QObject, Signal
 from ui.log_reader import LogReaderThread
 from log_persistence import LogPersistence
@@ -24,6 +25,7 @@ class ServerManager(QObject):
     server_started = Signal(str)  # server_name
     server_stopped = Signal(str)  # server_name
     server_log = Signal(str, str, bool)  # (server_name, log_line, is_error)
+    port_detected = Signal(str, int)  # (server_name, port)
     
     def __init__(self, config_file: str = "servers.json", settings_file: str = "settings.json"):
         super().__init__()
@@ -40,6 +42,7 @@ class ServerManager(QObject):
         self.log_persistence = LogPersistence()  # Log persistence handler
         self.metrics_persistence = MetricsPersistence()  # Metrics persistence handler
         self.last_cleanup_time: Dict[str, float] = {}  # Track last cleanup time per server
+        self.detected_ports: Dict[str, Optional[int]] = {}  # Detected ports for each server
         self.load_settings()
         self.load_config()
         # Cleanup old data on startup
@@ -297,6 +300,12 @@ class ServerManager(QObject):
             self.servers[name]["started_at"] = datetime.now().isoformat()
             self.save_config()
             
+            # Initialize detected port
+            self.detected_ports[name] = None
+            
+            # Try to detect port immediately and periodically
+            self.detect_port(name)
+            
             # Emit signals
             self.server_started.emit(name)
             self.server_status_changed.emit(name, "running")
@@ -337,6 +346,8 @@ class ServerManager(QObject):
                 del self.cpu_history[name]
             if name in self.metrics_history:
                 del self.metrics_history[name]
+            if name in self.detected_ports:
+                del self.detected_ports[name]
             
             self.servers[name]["status"] = "stopped"
             if "started_at" in self.servers[name]:
@@ -626,4 +637,77 @@ class ServerManager(QObject):
                     result[name] = in_memory_data
         
         return result
+    
+    def detect_port(self, name: str) -> Optional[int]:
+        """
+        Detect the port a server is listening on.
+        Uses multiple methods:
+        1. Check configured port in server config
+        2. Use psutil to check process connections
+        3. Parse recent logs for port patterns
+        
+        Returns the detected port or None if not found.
+        """
+        if name not in self.servers:
+            return None
+        
+        # Method 1: Check configured port
+        configured_port = self.servers[name].get("port")
+        if configured_port:
+            if self.detected_ports.get(name) != configured_port:
+                self.detected_ports[name] = configured_port
+                self.port_detected.emit(name, configured_port)
+            return configured_port
+        
+        # Method 2: Use psutil to check process connections
+        if name in self.psutil_processes:
+            try:
+                proc = self.psutil_processes[name]
+                if proc.is_running():
+                    connections = proc.connections(kind='inet')
+                    for conn in connections:
+                        if conn.status == psutil.CONN_LISTEN:
+                            port = conn.laddr.port
+                            # Only consider ports in common web server range (1024-65535)
+                            # Exclude system ports (< 1024) unless explicitly configured
+                            if port >= 1024:
+                                if self.detected_ports.get(name) != port:
+                                    self.detected_ports[name] = port
+                                    self.port_detected.emit(name, port)
+                                return port
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        
+        # Method 3: Parse recent logs for port patterns
+        # Common patterns: "listening on port 3000", "Server running on http://localhost:3000", etc.
+        port_patterns = [
+            r'(?:listening|running|started|bound).*?(?:on|at).*?port\s+(\d+)',
+            r'(?:listening|running|started|bound).*?port\s+(\d+)',
+            r'http://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)',
+            r'https://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)',
+            r'(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d+)(?:\s|$|/|\?|,)',  # Pattern like "localhost:3000"
+        ]
+        
+        # Load recent logs (last 100 lines)
+        recent_logs = self.load_logs(name, max_lines=100)
+        for log_line in reversed(recent_logs):  # Check most recent first
+            for pattern in port_patterns:
+                match = re.search(pattern, log_line, re.IGNORECASE)
+                if match:
+                    try:
+                        port = int(match.group(1))
+                        # Validate port range
+                        if 1024 <= port <= 65535:
+                            if self.detected_ports.get(name) != port:
+                                self.detected_ports[name] = port
+                                self.port_detected.emit(name, port)
+                            return port
+                    except (ValueError, IndexError):
+                        continue
+        
+        return self.detected_ports.get(name)
+    
+    def get_detected_port(self, name: str) -> Optional[int]:
+        """Get the detected port for a server"""
+        return self.detected_ports.get(name)
 

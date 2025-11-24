@@ -9,7 +9,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QTextCharFormat, QColor
 from datetime import datetime, timezone, timedelta
 import re
-from typing import Dict
+import webbrowser
+from typing import Dict, Optional
 from .constants import SPACING_MEDIUM, SPACING_NORMAL, SPACING_SMALL
 from .styles import (
     get_server_detail_style, get_info_group_style, get_primary_button_style,
@@ -112,8 +113,18 @@ class ServerDetailView(QWidget):
         self.remove_btn.clicked.connect(self.remove_server)
         button_layout.addWidget(self.remove_btn)
         
+        self.open_url_btn = QPushButton("Open URL")
+        self.open_url_btn.setStyleSheet(get_primary_button_style())
+        self.open_url_btn.clicked.connect(self.open_url)
+        self.open_url_btn.setEnabled(False)  # Disabled until port is detected
+        self.open_url_btn.setVisible(False)  # Hidden until port is detected
+        button_layout.addWidget(self.open_url_btn)
+        
         button_layout.addStretch()
         layout.addLayout(button_layout)
+        
+        # Track detected port
+        self.detected_port: Optional[int] = None
         
         # Server information section (details below controls)
         info_group = QWidget()
@@ -216,6 +227,12 @@ class ServerDetailView(QWidget):
         self.args_label.setText(server_config.get("args", "--") or "--")
         port = server_config.get("port")
         self.port_label.setText(str(port) if port else "Auto")
+        
+        # Check if we have a detected port and update button
+        if self.parent_window and hasattr(self.parent_window, 'server_manager'):
+            detected_port = self.parent_window.server_manager.get_detected_port(self.server_name)
+            if detected_port:
+                self.update_detected_port(detected_port)
     
     def update_status(self, status: str):
         """Update status display and button states"""
@@ -234,6 +251,15 @@ class ServerDetailView(QWidget):
         self.start_btn.setEnabled(not is_running)
         self.stop_btn.setEnabled(is_running)
         self.restart_btn.setEnabled(is_running)
+        
+        # Hide open URL button if server is stopped
+        if not is_running:
+            self.open_url_btn.setVisible(False)
+            self.detected_port = None
+        elif self.detected_port:
+            # Show button if port is detected and server is running
+            self.open_url_btn.setVisible(True)
+            self.open_url_btn.setEnabled(True)
     
     def update_metrics(self, metrics: Dict):
         """Update CPU and RAM display"""
@@ -439,4 +465,28 @@ class ServerDetailView(QWidget):
         # Update graphs
         self.performance_graphs.update_cpu_data(cpu_data_points)
         self.performance_graphs.update_ram_data(ram_data_points)
+    
+    def update_detected_port(self, port: int):
+        """Update the detected port and show/open URL button"""
+        self.detected_port = port
+        # Update port label to show detected port
+        if self.parent_window and hasattr(self.parent_window, 'server_manager'):
+            server_config = self.parent_window.server_manager.servers.get(self.server_name, {})
+            configured_port = server_config.get("port")
+            if configured_port:
+                self.port_label.setText(str(configured_port))
+            else:
+                self.port_label.setText(f"{port} (detected)")
+        
+        # Show and enable open URL button if server is running
+        status = self.parent_window.server_manager.get_server_status(self.server_name) if self.parent_window and hasattr(self.parent_window, 'server_manager') else "stopped"
+        if status == "running":
+            self.open_url_btn.setVisible(True)
+            self.open_url_btn.setEnabled(True)
+    
+    def open_url(self):
+        """Open the server URL in the default browser"""
+        if self.detected_port:
+            url = f"http://localhost:{self.detected_port}"
+            webbrowser.open(url)
 
