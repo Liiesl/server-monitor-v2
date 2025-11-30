@@ -118,6 +118,7 @@ class ServerManager(QObject):
     def stop_server(self, name: str) -> bool:
         if name in self.instances:
             instance = self.instances[name]
+            # stop() now handles the full process tree kill and waits
             if instance.stop():
                 del self.instances[name]
                 if name in self.psutil_processes:
@@ -127,7 +128,13 @@ class ServerManager(QObject):
         return False
     
     def restart_server(self, name: str) -> bool:
-        self.stop_server(name)
+        """Stops and then Starts the server with a slight delay for socket release"""
+        if self.stop_server(name):
+            # Small buffer to allow OS to release port sockets completely
+            time.sleep(0.5) 
+            return self.start_server(name)
+        
+        # If stop returned False, it might not have been running, try starting anyway
         return self.start_server(name)
     
     def get_server_status(self, name: str) -> str:

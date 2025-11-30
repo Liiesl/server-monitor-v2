@@ -45,6 +45,9 @@ class ServerInstance(QObject):
                 
             cwd = os.path.dirname(server_path) if os.path.isfile(server_path) else server_path
             
+            # Start process
+            # On Windows, using CREATE_NO_WINDOW hides the console.
+            # On Unix, we might want setsid to easily kill groups, but psutil handles trees fine.
             self.process = subprocess.Popen(
                 cmd,
                 cwd=cwd,
@@ -53,18 +56,17 @@ class ServerInstance(QObject):
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
             
-            # Wrap with psutil
+            # Wrap with psutil immediately to capture the correct PID
             try:
                 self.psutil_process = psutil.Process(self.process.pid)
-                self.psutil_process.cpu_percent(interval=None)
+                self.psutil_process.cpu_percent(interval=None) # Initialize CPU counter
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
+                # Process died immediately
+                self.process = None
+                return False
                 
             # Start log reader
             self.log_reader = LogReaderThread(self.name, self.process, self)
-            # LogReaderThread takes 'manager' and calls 'manager.server_log.emit'.
-            # We pass 'self' as the manager.
-            
             self.log_reader.start()
             
             self.config["status"] = "running"
@@ -96,33 +98,76 @@ class ServerInstance(QObject):
             self._detect_port_from_log(line)
 
     def stop(self) -> bool:
-        """Stop the server process"""
+        """Stop the server process and all its subprocesses completely"""
         if not self.process:
-            return False
-            
-        try:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                
-            self.process = None
-            self.psutil_process = None
-            
-            if self.log_reader:
-                self.log_reader.stop()
-                self.log_reader = None
-                
-            self.config["status"] = "stopped"
-            if "started_at" in self.config:
-                del self.config["started_at"]
-                
-            self.status_changed.emit("stopped")
+            # Update status just in case it was stuck in a weird state
+            if self.config.get("status") == "running":
+                 self.config["status"] = "stopped"
+                 self.status_changed.emit("stopped")
             return True
+            
+        print(f"Stopping server: {self.name}")
+        
+        # 1. Stop Log Reader first to stop processing new output during kill
+        if self.log_reader:
+            self.log_reader.stop()
+            self.log_reader = None
+
+        # 2. Kill the Process Tree
+        try:
+            # We use the PID to reconstruct the psutil object if self.psutil_process is stale
+            parent = psutil.Process(self.process.pid)
+            children = parent.children(recursive=True)
+            
+            # Add parent to list of processes to kill
+            procs = children + [parent]
+            
+            # Send SIGTERM (Polite kill)
+            for p in procs:
+                try:
+                    p.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+
+            # Wait for them to die (up to 5 seconds)
+            gone, alive = psutil.wait_procs(procs, timeout=5)
+            
+            # Send SIGKILL (Force kill) to anyone still alive
+            for p in alive:
+                print(f"Force killing process {p.pid} for {self.name}")
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+                    
+        except psutil.NoSuchProcess:
+            # Main process already dead
+            pass
         except Exception as e:
-            print(f"Error stopping server {self.name}: {e}")
-            return False
+            print(f"Error during process termination for {self.name}: {e}")
+
+        # 3. Cleanup Popen object
+        try:
+            # Wait for the internal Popen object to acknowledge death
+            self.process.wait(timeout=1)
+        except (subprocess.TimeoutExpired, Exception):
+            # If Popen wrapper is still confused, force kill it locally (though psutil likely did it)
+            try:
+                self.process.kill() 
+            except: 
+                pass
+        
+        # 4. Final Cleanup
+        self.process = None
+        self.psutil_process = None
+        self.detected_port = None # Reset detected port
+        
+        self.config["status"] = "stopped"
+        if "started_at" in self.config:
+            del self.config["started_at"]
+            
+        self.status_changed.emit("stopped")
+        return True
 
     def _build_command(self) -> Optional[List[str]]:
         """Build the command line arguments based on server type"""
@@ -183,6 +228,7 @@ class ServerInstance(QObject):
             return None
             
         try:
+            # cpu_percent(interval=None) returns float, but can be 0.0 on first call
             raw_cpu = self.psutil_process.cpu_percent(interval=None)
             
             self.cpu_history.append(raw_cpu)
@@ -210,12 +256,24 @@ class ServerInstance(QObject):
         # 2. Psutil connections
         if self.psutil_process:
             try:
-                for conn in self.psutil_process.connections(kind='inet'):
-                    if conn.status == psutil.CONN_LISTEN:
-                        port = conn.laddr.port
-                        if port >= 1024:
-                            self._set_detected_port(port)
-                            return
+                # Iterate over connections of the main process AND children
+                # Often the main process is a wrapper (e.g. npm) and the child binds the port
+                processes_to_check = [self.psutil_process]
+                try:
+                    processes_to_check.extend(self.psutil_process.children(recursive=True))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+                for proc in processes_to_check:
+                    try:
+                        for conn in proc.connections(kind='inet'):
+                            if conn.status == psutil.CONN_LISTEN:
+                                port = conn.laddr.port
+                                if port >= 1024:
+                                    self._set_detected_port(port)
+                                    return
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
             except:
                 pass
 
