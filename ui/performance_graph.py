@@ -23,6 +23,7 @@ class PerformanceGraphWidget(QWidget):
         # Data storage: list of (timestamp, value) tuples
         self.data_points: List[Tuple[float, float]] = []
         self.max_data_points = 300  # Keep last 5 minutes at ~1 second intervals
+        self.fixed_time_range = 300.0  # Default 5 minutes in seconds
         
         # Graph settings
         self.graph_type = "cpu"  # "cpu" or "ram"
@@ -49,10 +50,19 @@ class PerformanceGraphWidget(QWidget):
         else:  # ram
             self.line_color = QColor(COLOR_SUCCESS)
         self.update()
+        
+    def set_time_range(self, seconds: float):
+        """Set the fixed time range for the X-axis in seconds"""
+        self.fixed_time_range = float(seconds)
+        self.update()
     
     def update_data(self, data_points: List[Tuple[float, float]]):
         """Update the graph data points (timestamp, value)"""
-        self.data_points = data_points[-self.max_data_points:]  # Keep only recent data
+        # Keep enough data points to cover the time range (plus some buffer)
+        # Assuming ~1 point per second, we need at least fixed_time_range points
+        # But we'll keep a bit more just in case
+        limit = max(self.max_data_points, int(self.fixed_time_range * 1.2))
+        self.data_points = data_points[-limit:]
         self.update()
     
     def paintEvent(self, event):
@@ -72,25 +82,21 @@ class PerformanceGraphWidget(QWidget):
         # Draw background
         painter.fillRect(0, 0, width, height, QColor(COLOR_BACKGROUND_CARD))
         
-        if not self.data_points:
-            # Draw "No data" message
-            painter.setPen(QColor(COLOR_TEXT_TERTIARY))
-            font = QFont("Arial", 12)
-            painter.setFont(font)
-            painter.drawText(
-                graph_x, graph_y, graph_width, graph_height,
-                Qt.AlignmentFlag.AlignCenter,
-                "No data available"
-            )
-            return
+        # Calculate time range based on fixed window
+        import time
+        current_time = time.time()
+        start_time = current_time - self.fixed_time_range
+        end_time = current_time
         
         # Calculate value range
-        values = [value for _, value in self.data_points]
-        if not values:
-            return
-        
-        min_value = min(values)
-        max_value = max(values)
+        if self.data_points:
+            values = [value for _, value in self.data_points]
+            min_value = min(values)
+            max_value = max(values)
+        else:
+            values = []
+            min_value = 0
+            max_value = 100 if self.graph_type == "cpu" else 1024
         
         # Add padding to range (10% on top and bottom)
         value_range = max_value - min_value
@@ -102,14 +108,7 @@ class PerformanceGraphWidget(QWidget):
             padding = value_range * 0.1
             min_value = max(0, min_value - padding)
             max_value = max_value + padding
-        
-        # Calculate time range
-        timestamps = [ts for ts, _ in self.data_points]
-        if len(timestamps) > 1:
-            time_range = timestamps[-1] - timestamps[0]
-        else:
-            time_range = 300  # Default to 5 minutes
-        
+            
         # Draw grid lines
         painter.setPen(QPen(QColor(self.grid_color), 1, Qt.PenStyle.DashLine))
         
@@ -132,18 +131,39 @@ class PerformanceGraphWidget(QWidget):
         for i in range(num_v_lines + 1):
             x = graph_x + (graph_width * i / num_v_lines)
             painter.drawLine(int(x), graph_y, int(x), graph_y + graph_height)
-        
-        # Draw graph line
-        if len(self.data_points) > 1:
+            
+            # Draw time labels (optional, e.g. -5m, -4m...)
+            # time_offset = self.fixed_time_range * (1 - i / num_v_lines)
+            # label_text = f"-{int(time_offset)}s"
+            # painter.drawText(int(x - 15), int(graph_y + graph_height + 15), label_text)
+
+        if not self.data_points:
+            # Draw "No data" message
+            painter.setPen(QColor(COLOR_TEXT_TERTIARY))
+            font = QFont("Arial", 12)
+            painter.setFont(font)
+            painter.drawText(
+                graph_x, graph_y, graph_width, graph_height,
+                Qt.AlignmentFlag.AlignCenter,
+                "No data available"
+            )
+        else:
+            # Draw graph line
             painter.setPen(QPen(self.line_color, 2))
             
             points = []
             for timestamp, value in self.data_points:
+                # Filter points outside current window
+                if timestamp < start_time:
+                    continue
+                    
                 # Calculate x position (time-based)
-                if time_range > 0:
-                    x_ratio = (timestamp - timestamps[0]) / time_range
+                if self.fixed_time_range > 0:
+                    x_ratio = (timestamp - start_time) / self.fixed_time_range
                 else:
                     x_ratio = 0
+                
+                # Clamp x to graph area
                 x = graph_x + graph_width * x_ratio
                 
                 # Calculate y position (value-based, inverted)
@@ -156,8 +176,13 @@ class PerformanceGraphWidget(QWidget):
                 points.append((int(x), int(y)))
             
             # Draw line connecting points
-            for i in range(len(points) - 1):
-                painter.drawLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+            if len(points) > 1:
+                for i in range(len(points) - 1):
+                    # Only draw if points are within bounds (simple check)
+                    p1 = points[i]
+                    p2 = points[i+1]
+                    if p1[0] >= graph_x and p2[0] <= graph_x + graph_width:
+                        painter.drawLine(p1[0], p1[1], p2[0], p2[1])
             
             # Draw filled area under the line
             if len(points) > 0:
@@ -166,14 +191,23 @@ class PerformanceGraphWidget(QWidget):
                 painter.setBrush(fill_color)
                 painter.setPen(Qt.PenStyle.NoPen)
                 
+                # Create polygon for fill
+                # Start at bottom-left of the first point's X
+                first_x = points[0][0]
+                last_x = points[-1][0]
+                
                 polygon_points = [
-                    (graph_x, graph_y + graph_height),  # Bottom left
+                    (first_x, graph_y + graph_height),  # Bottom left (at first point X)
                 ]
                 polygon_points.extend(points)
-                polygon_points.append((points[-1][0], graph_y + graph_height))  # Bottom right
+                polygon_points.append((last_x, graph_y + graph_height))  # Bottom right (at last point X)
                 
                 polygon = QPolygon([QPoint(x, y) for x, y in polygon_points])
+                
+                # Clip to graph area to avoid drawing outside
+                painter.setClipRect(graph_x, graph_y, graph_width, graph_height)
                 painter.drawPolygon(polygon)
+                painter.setClipping(False)
         
         # Draw title
         title = "CPU Usage (%)" if self.graph_type == "cpu" else "RAM Usage (MB)"
@@ -201,7 +235,7 @@ class PerformanceGraphTabWidget(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_time_range_seconds = 300  # Default: 5 minutes
+        self.current_time_range_seconds = 300.0  # Default: 5 minutes
         self.init_ui()
     
     def init_ui(self):
@@ -291,11 +325,13 @@ class PerformanceGraphTabWidget(QWidget):
         # Create CPU graph
         self.cpu_graph = PerformanceGraphWidget()
         self.cpu_graph.set_graph_type("cpu")
+        self.cpu_graph.set_time_range(self.current_time_range_seconds)
         self.tab_widget.addTab(self.cpu_graph, "CPU")
         
         # Create RAM graph
         self.ram_graph = PerformanceGraphWidget()
         self.ram_graph.set_graph_type("ram")
+        self.ram_graph.set_time_range(self.current_time_range_seconds)
         self.tab_widget.addTab(self.ram_graph, "RAM")
         
         layout.addWidget(self.tab_widget)
@@ -313,7 +349,11 @@ class PerformanceGraphTabWidget(QWidget):
         # Map index to seconds: 5min, 15min, 30min, 1h, 6h, 12h, 24h
         time_ranges = [300, 900, 1800, 3600, 21600, 43200, 86400]
         if 0 <= index < len(time_ranges):
-            self.current_time_range_seconds = time_ranges[index]
+            self.current_time_range_seconds = float(time_ranges[index])
+            # Update graphs with new time range
+            self.cpu_graph.set_time_range(self.current_time_range_seconds)
+            self.ram_graph.set_time_range(self.current_time_range_seconds)
+            
             self.time_range_changed.emit(self.current_time_range_seconds)
     
     def get_time_range_seconds(self) -> float:
